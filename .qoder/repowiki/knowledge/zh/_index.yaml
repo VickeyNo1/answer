@@ -1,0 +1,16 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: Q0DeR-MaG1C-BrAnCh-Fo2-NoN-GiT-Or-No-C0MmIt
+nodes_managed: true
+exported_at: "2026-07-07T14:39:52Z"
+modules:
+    "":
+        dir_name: 会计答疑智能体 - 开发文档
+        title: 会计答疑智能体 - 开发文档
+        scope:
+            - 开发文档.md
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []

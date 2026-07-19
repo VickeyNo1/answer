@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: ""
+title: 会计答疑智能体 - 开发文档
+scope:
+    - 开发文档.md
+source_files: []
+depends_on: []
+related_to: []
