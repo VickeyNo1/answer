@@ -7,7 +7,7 @@ APP_DIR="${APP_DIR:-/opt/answer}"
 export PATH="$HOME/.local/bin:$PATH"
 
 echo "==> [1/5] git pull"
-git -C "$APP_DIR" pull --ff-only
+cd "$APP_DIR" && git pull --ff-only
 
 echo "==> [2/5] 后端：uv sync + 建库建表/初始化数据（幂等）"
 cd "$APP_DIR/backend"

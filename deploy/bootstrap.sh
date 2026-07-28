@@ -31,7 +31,7 @@ uv --version
 echo "==> [4/4] 拉取代码到 $APP_DIR"
 mkdir -p "$(dirname "$APP_DIR")"
 if [ -d "$APP_DIR/.git" ]; then
-  git -C "$APP_DIR" pull --ff-only
+  ( cd "$APP_DIR" && git pull --ff-only )
 else
   git clone "$REPO" "$APP_DIR"
 fi
