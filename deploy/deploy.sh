@@ -22,11 +22,15 @@ npm run build
 echo "==> [4/5] 重启服务"
 systemctl restart answer-backend
 systemctl restart answer-frontend
-systemctl reload nginx || systemctl restart nginx
+systemctl reload-or-restart nginx
 
-echo "==> [5/5] 健康检查"
-sleep 2
-if curl -fsS http://127.0.0.1:8000/api/health; then
+echo "==> [5/5] 健康检查（最多等 30 秒）"
+ok=""
+for i in $(seq 1 30); do
+  if curl -fsS http://127.0.0.1:8000/api/health 2>/dev/null; then ok=1; break; fi
+  sleep 1
+done
+if [ -n "$ok" ]; then
   echo
   echo "部署完成 ✅  外部访问： http://8.148.219.179/"
 else
