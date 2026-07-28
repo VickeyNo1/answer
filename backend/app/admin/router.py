@@ -23,7 +23,7 @@ def _hash_password(password: str) -> str:
 
 
 def _row_to_userinfo(row) -> dict:
-    """将 sqlite3.Row 转换为 UserInfo 兼容的 dict"""
+    """将查询结果行转换为 UserInfo 兼容的 dict"""
     return {
         "id": row["id"],
         "student_id": row["student_id"],
@@ -45,7 +45,7 @@ async def create_student(
     with get_db_ctx() as db:
         # 检查学号是否已存在
         cursor = db.execute(
-            "SELECT id FROM users WHERE student_id = ?", (req.student_id,)
+            "SELECT id FROM users WHERE student_id = %s", (req.student_id,)
         )
         if cursor.fetchone() is not None:
             raise HTTPException(
@@ -57,14 +57,14 @@ async def create_student(
         cursor = db.execute(
             """
             INSERT INTO users (student_id, password_hash, name, role)
-            VALUES (?, ?, ?, 'student')
+            VALUES (%s, %s, %s, 'student')
             """,
             (req.student_id, password_hash, req.name),
         )
         db.commit()
 
         # 查询新建的用户
-        cursor = db.execute("SELECT * FROM users WHERE id = ?", (cursor.lastrowid,))
+        cursor = db.execute("SELECT * FROM users WHERE id = %s", (cursor.lastrowid,))
         return _row_to_userinfo(cursor.fetchone())
 
 
@@ -81,7 +81,7 @@ async def list_students(
         where = "WHERE role = 'student'"
         params = []
         if keyword:
-            where += " AND (student_id LIKE ? OR name LIKE ?)"
+            where += " AND (student_id LIKE %s OR name LIKE %s)"
             kw = f"%{keyword}%"
             params.extend([kw, kw])
 
@@ -97,7 +97,7 @@ async def list_students(
             SELECT id, student_id, name, role, created_at
             FROM users {where}
             ORDER BY created_at DESC
-            LIMIT ? OFFSET ?
+            LIMIT %s OFFSET %s
             """,
             params,
         )
@@ -121,7 +121,7 @@ async def update_student(
     """修改学生信息（name 和 password 均为可选）"""
     with get_db_ctx() as db:
         cursor = db.execute(
-            "SELECT * FROM users WHERE id = ? AND role = 'student'",
+            "SELECT * FROM users WHERE id = %s AND role = 'student'",
             (student_id,),
         )
         row = cursor.fetchone()
@@ -134,22 +134,22 @@ async def update_student(
         updates = []
         params = []
         if req.name is not None:
-            updates.append("name = ?")
+            updates.append("name = %s")
             params.append(req.name)
         if req.password is not None:
-            updates.append("password_hash = ?")
+            updates.append("password_hash = %s")
             params.append(_hash_password(req.password))
 
         if updates:
             params.append(student_id)
             db.execute(
-                f"UPDATE users SET {', '.join(updates)} WHERE id = ?",
+                f"UPDATE users SET {', '.join(updates)} WHERE id = %s",
                 params,
             )
             db.commit()
 
         # 查询更新后的用户
-        cursor = db.execute("SELECT * FROM users WHERE id = ?", (student_id,))
+        cursor = db.execute("SELECT * FROM users WHERE id = %s", (student_id,))
         return _row_to_userinfo(cursor.fetchone())
 
 
@@ -161,7 +161,7 @@ async def delete_student(
     """删除学生（级联删除其对话和消息）"""
     with get_db_ctx() as db:
         cursor = db.execute(
-            "SELECT * FROM users WHERE id = ?",
+            "SELECT * FROM users WHERE id = %s",
             (student_id,),
         )
         row = cursor.fetchone()
@@ -179,13 +179,13 @@ async def delete_student(
 
         # 级联删除：先删消息，再删对话，最后删用户
         conv_ids_cursor = db.execute(
-            "SELECT id FROM conversations WHERE user_id = ?",
+            "SELECT id FROM conversations WHERE user_id = %s",
             (student_id,),
         )
         conv_ids = [r["id"] for r in conv_ids_cursor.fetchall()]
 
         if conv_ids:
-            placeholders = ",".join("?" * len(conv_ids))
+            placeholders = ",".join(["%s"] * len(conv_ids))
             db.execute(
                 f"DELETE FROM messages WHERE conversation_id IN ({placeholders})",
                 conv_ids,
@@ -195,7 +195,7 @@ async def delete_student(
                 conv_ids,
             )
 
-        db.execute("DELETE FROM users WHERE id = ?", (student_id,))
+        db.execute("DELETE FROM users WHERE id = %s", (student_id,))
         db.commit()
 
     return {"message": "ok"}
@@ -253,7 +253,7 @@ async def batch_import_students(
 
             # 检查学号是否已存在
             cursor = db.execute(
-                "SELECT id FROM users WHERE student_id = ?", (student_id,)
+                "SELECT id FROM users WHERE student_id = %s", (student_id,)
             )
             if cursor.fetchone() is not None:
                 failed += 1
@@ -266,7 +266,7 @@ async def batch_import_students(
                 db.execute(
                     """
                     INSERT INTO users (student_id, password_hash, name, role)
-                    VALUES (?, ?, ?, 'student')
+                    VALUES (%s, %s, %s, 'student')
                     """,
                     (student_id, password_hash, name),
                 )

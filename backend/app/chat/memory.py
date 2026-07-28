@@ -1,4 +1,4 @@
-"""多轮对话记忆管理：从 SQLite 加载历史消息拼入 prompt"""
+"""多轮对话记忆管理：从 MySQL 加载历史消息拼入 prompt"""
 from app.database import get_db_ctx
 
 
@@ -10,12 +10,12 @@ def get_conversation_history(conversation_id: int, limit: int = 10) -> list[dict
     with get_db_ctx() as db:
         cursor = db.execute(
             """SELECT role, content FROM messages
-               WHERE conversation_id = ?
+               WHERE conversation_id = %s
                ORDER BY created_at DESC
-               LIMIT ?""",
+               LIMIT %s""",
             (conversation_id, limit),
         )
-        rows = cursor.fetchall()
+        rows = list(cursor.fetchall())
 
     # 反转为时间正序（最早在前）
     rows.reverse()

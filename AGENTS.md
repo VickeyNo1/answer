@@ -1,8 +1,20 @@
 # AGENTS.md
 
 > 本文件是 **AI 编码助手的唯一入口文档**。开始任何任务前先读本文件，再按需跳转到 `doc/` 下的详细文档。
-> 项目：会计答疑智能体（RAG + 大模型的会计专业 AI 答疑系统）
-> 文档基线版本：v2.0 ｜ 维护约定见 [§9](#9-文档维护约定ai-必读)
+> 项目：会计答疑智能体（大模型 Function Calling 对接外部知识库检索服务的会计专业 AI 答疑系统）
+> 文档基线版本：v3.0 ｜ 维护约定见 [§9](#9-文档维护约定ai-必读)
+
+---
+
+## 0. 部署架构（A/B 双服务器约定，务必牢记）
+
+> **A = 数据服务器**：公网 `8.134.97.196` / 私网 `172.22.207.228`（Alibaba Cloud Linux 3）。跑 **MySQL 8.4** + 向量化知识库 + **知识库检索服务 `:8100`**。
+> **B = 应用服务器**：公网 `8.148.219.179` / 私网 `172.17.240.44`（Alibaba Cloud Linux 2）。跑 **Nginx + Next.js + FastAPI**。
+> 两机通过 VPC 对等连接私网互通（可用区广州A）。
+>
+> - **开发环境**：直连机器A **公网** MySQL（`8.134.97.196:3306`）与知识库服务；密码等填 `backend/.env`（勿提交）。
+> - **生产环境**：应用服务器 B 走 **私网** 访问 A（`172.22.207.228`）。
+> - 知识库检索服务仅私网暴露 `:8100`；契约见 `doc/知识库对接文档.md`、`doc/知识库科目枚举约定.md`。
 
 ---
 
@@ -26,13 +38,13 @@
 
 面向会计专业学生的 AI 智能答疑系统，前后端分离：
 
-- **后端**（`backend/`，端口 8000）：FastAPI，提供认证、对话（RAG + 流式）、知识库、管理后台、大模型管理、科目管理接口。
+- **后端**（`backend/`，端口 8000）：FastAPI，提供认证、对话（Function Calling + 流式）、管理后台、大模型管理、科目列表接口。
 - **前端**（`frontend/`，端口 3000）：Next.js App Router，学生对话页 + 管理员后台。
-- **核心链路**：学生提问 → 向量化 → ChromaDB 检索（可按科目加权）→ 组装 Prompt → dashscope 大模型流式回答（SSE）→ 记录用量与费用。
+- **核心链路**：学生提问 → dashscope 大模型带 `search_cpa_knowledge` 工具流式生成 → 模型决定是否检索 → 后端调机器A 知识库检索服务 `POST /kb/search`（subject 由后端注入）→ 拼接检索结果作二轮流式回答（SSE）→ 落库知识点编号（`knowledge_point_ids`）并记录用量费用。
 
-两大能力（v2.0 新增）：
-1. **大模型管理**（仅管理员）：配置/切换阿里通义千问与 DeepSeek 模型，查看每日/累计 token 用量与费用。
-2. **科目体系**（全员可见）：财务通用类 + 专业课程类；学生选科目后，RAG 检索对该科目知识**加权不过滤**。
+两大要点（v3.0）：
+1. **知识库对接**：本地 ChromaDB RAG 全部移除，改为对接机器A 外部知识库检索服务；大模型通过 Function Calling 自主决定是否检索，检索失败自动降级为大模型直答（不报错）。
+2. **科目体系**：本地科目 CRUD 移除，科目枚举由知识库侧维护（当前仅 `cpa_acc` = CPA 会计 online），后端硬编码注册表并通过 `GET /api/subjects` 只暴露 online 项。
 
 ---
 
@@ -46,11 +58,12 @@
 | Markdown 渲染 | react-markdown + remark-gfm + rehype-highlight | — | 对话回答渲染 |
 | 后端框架 | FastAPI | 0.115.* | `backend/requirements.txt` |
 | ASGI 服务器 | uvicorn[standard] | 0.30.* | 同上 |
-| 关系数据库 | SQLite（WAL 模式） | 内置 | `backend/data/app.db` |
-| 向量数据库 | ChromaDB（cosine） | 0.5.* | `backend/data/chroma_db` |
-| 大模型/Embedding | dashscope SDK（通义千问 + DeepSeek 统一接入） | 1.20.* | `DASHSCOPE_API_KEY` |
+| 关系数据库 | MySQL 8.4（机器A，utf8mb4） | — | 连接配置见 `backend/.env` |
+| MySQL 驱动 | PyMySQL（DictCursor） | 1.1.* | `app/database.py` |
+| 知识库检索 | 外部检索服务 `POST /kb/search`（HTTP） | — | `app/kb/client.py`（httpx） |
+| 大模型 | dashscope SDK（通义千问 + DeepSeek 统一接入，Function Calling） | 1.20.* | `DASHSCOPE_API_KEY` |
 | 认证 | JWT（python-jose）+ bcrypt（passlib） | — | `app/auth/` |
-| 文档解析 | python-docx / pypdf / openpyxl | — | `app/knowledge/doc_parser.py` |
+| Excel 解析 | openpyxl（学生批量导入） | 3.1.* | `app/admin/` |
 | Python 环境 | uv + Python 3.11+ | — | `backend/.venv` |
 
 > ⚠️ DeepSeek 走**阿里百炼统一接入**，复用 `DASHSCOPE_API_KEY`，模型名直接通过 dashscope `Generation.call` 调用，**无需**独立 SDK 或分支。
@@ -63,16 +76,15 @@
 
 | 路径 | 职责 | 关键点 |
 |------|------|--------|
-| `main.py` | FastAPI 应用入口，注册 7 个 router，CORS，`/api/health` | 启动时 `init_db()` 建表 |
-| `config.py` | `Settings`（pydantic-settings），读 `.env` | `get_settings()` 带 `lru_cache` |
-| `database.py` | SQLite 建表 + 轻量迁移 | `get_db()`（Depends 生成器）vs `get_db_ctx()`（脚本上下文管理器）见 §6 |
+| `main.py` | FastAPI 应用入口，注册 5 个 router，CORS，`/api/health` | 启动时 `init_db()` 建库建表 |
+| `config.py` | `Settings`（pydantic-settings），读 `.env` | `MYSQL_*` / `KB_*` 配置；`get_settings()` 带 `lru_cache` |
+| `database.py` | MySQL 建库建表（PyMySQL + DictCursor） | `DB` 包装类保留 `db.execute()` 习惯；`get_db()`（Depends 生成器）vs `get_db_ctx()`（脚本上下文管理器）见 §6 |
 | `models.py` | 全部 Pydantic 请求/响应模型 | 新增接口先在此定义 schema |
 | `auth/` | 登录、JWT、依赖 | `deps.py`：`get_current_user`、`require_admin` |
-| `chat/` | 对话与 RAG 主流程 | `router.py`（SSE + 对话 CRUD）、`qwen_service.py`（`stream_chat`）、`memory.py`（多轮历史） |
-| `knowledge/` | 知识库 | `router.py`（上传/列表/删除）、`chroma_service.py`（向量存取 + `search_weighted`）、`doc_parser.py`、`embedding.py`（text-embedding-v3） |
+| `chat/` | 对话主流程 | `router.py`（SSE + 对话 CRUD）、`qwen_service.py`（`stream_chat` Function Calling 两轮流式）、`memory.py`（多轮历史） |
+| `kb/` | 知识库对接（v3.0） | `client.py`（`POST /kb/search`，超时/5001 重试1次后降级）、`prompt.py`（`SEARCH_TOOL` schema + 结果拼接 + `collect_kp_ids`）、`subjects.py`（科目注册表 + `GET /api/subjects`） |
 | `admin/` | 管理后台 | `router.py`（学生增删改查/批量、统计）、`stats.py`（聚合统计） |
-| `llm/` | 大模型管理（v2.0） | `router.py`（模型 CRUD/activate/usage）、`store.py`（模型与用量数据访问 + 费用计算） |
-| `subjects/` | 科目（v2.0） | `router.py`：`router`（公开列表）+ `admin_router`（管理员 CRUD） |
+| `llm/` | 大模型管理 | `router.py`（模型 CRUD/activate/usage）、`store.py`（模型与用量数据访问 + 费用计算） |
 
 ### 前端 `frontend/src/`
 
@@ -80,12 +92,12 @@
 |------|------|
 | `app/page.tsx` | 学生对话主页（会话列表、流式对话、科目选择） |
 | `app/login/page.tsx` | 登录页 |
-| `app/admin/page.tsx` | 管理后台，Tab 容器（学生/知识库/统计/大模型/科目） |
-| `components/` | `AuthGuard`、`ChatInput`、`ChatWindow`、`ConversationList` |
-| `components/admin/` | `StudentTab`、`KnowledgeTab`、`StatsTab`、`ModelTab`（v2.0）、`SubjectTab`（v2.0） |
+| `app/admin/page.tsx` | 管理后台，Tab 容器（统计/学生/大模型） |
+| `components/` | `AuthGuard`、`ChatInput`、`ChatWindow`（含「正在检索知识库…」提示）、`ConversationList` |
+| `components/admin/` | `StatsTab`、`StudentTab`、`ModelTab` |
 | `lib/api.ts` | fetch 封装：`apiGet/apiPost/apiPut/apiDelete/apiUpload` |
 | `lib/auth.ts` | token 本地存储与读取 |
-| `lib/sse.ts` | SSE 对话客户端 `sendChatMessage(conversationId, message, subjectId, callbacks)` |
+| `lib/sse.ts` | SSE 对话客户端 `sendChatMessage(conversationId, message, subject, callbacks)`（处理 `kb_search`/`kp_ids` 事件） |
 | `types/index.ts` | 全部 TypeScript 类型（与后端 `models.py` 对应） |
 
 ---
@@ -97,16 +109,17 @@
 ### 后端（在 `backend/` 目录）
 
 ```powershell
-# 安装依赖（首次）
-uv pip install -r requirements.txt
+# 安装依赖（首次；pyproject.toml 为准，requirements.txt 同步维护）
+uv sync
 
-# 初始化默认数据（管理员 admin/admin123 + 默认模型 + 默认科目，幂等）
+# 初始化默认数据（管理员 admin/admin123 + 默认模型，幂等）
+# 需 backend/.env 已填机器A MySQL 连接信息（MYSQL_PASSWORD 勿留 CHANGE_ME）
 uv run python seed.py
 
-# 启动后端（http://localhost:8000，文档 /docs）
+# 启动后端（http://localhost:8000，文档 /docs）；启动时自动建库建表
 uv run uvicorn app.main:app --reload
 
-# 运行测试
+# 运行测试（MySQL 不可达时全部 skip；测试库 answer_test 自动建表/清理）
 uv run pytest -q
 ```
 
@@ -119,6 +132,7 @@ npx tsc --noEmit       # 类型检查
 ```
 
 - 默认管理员账号：`admin` / `admin123`（由 `seed.py` 写入）。
+- 测试库 `answer_test`（`tests/conftest.py` 自动建库建表 + teardown DROP）；机器A MySQL 不可达时全部测试 skip。
 - E2E 测试（`tests/e2e/`）在后端未启动时自动 skip。
 
 ---
@@ -126,10 +140,13 @@ npx tsc --noEmit       # 类型检查
 ## 6. 编码约定与注意事项（必读）
 
 - **数据库连接两种用法别混用**：接口内用 `Depends(get_db)`（生成器）；脚本/非请求上下文用 `with get_db_ctx() as db`（上下文管理器）。
+- **SQL 占位符统一用 `%s`**（PyMySQL 风格），**不要用 `?`**；日期用 MySQL 函数（如 `CURDATE()`，不要用 SQLite 的 `DATE('now')`）。
+- **PyMySQL 返回类型陷阱**：`fetchall()` 结果需 `list()` 化再传给 Pydantic；`SUM()` 返回 `Decimal`（用 `int()`/`float()` 包裹）；`DATE` 列返回 `date`、`created_at` 返回 `datetime`（作为字符串字段时需 `str()`）。
 - **FastAPI 路由顺序**：静态路径要声明在动态路径之前。例如 `/api/admin/models/usage` 必须在 `/{model_id}` 之前，否则会被 `int` 参数路由拦截。
-- **科目未分类约定**：`subject_id = 0` 表示「未分类」；历史文档无科目归属时按 0 处理，检索时走普通权重。
-- **科目加权检索（不过滤）**：候选取 `top_k×3`，命中所选科目块 `distance×0.6`（`SUBJECT_MATCH_WEIGHT`）、通用类科目块 `distance×0.8`（`GENERAL_WEIGHT`），其余不变，按 distance 升序取前 `top_k`。见 `knowledge/chroma_service.py`。
-- **用量采集**：从 dashscope 流式响应的 `usage` 读取 `input_tokens`/`output_tokens`；无 usage 时记 0。费用 = `tokens/1000 × 单价`，单价由管理员维护（不自动同步官方价）。
+- **Function Calling subject 注入**：`search_cpa_knowledge` tool schema 只暴露 `query`/`collection`/`top_k`，**`subject` 由后端从会话上下文注入**（模型不可决定），避免模型乱填枚举。
+- **KB 检索降级策略**：`app/kb/client.py` 调 `POST /kb/search`，超时或 `5001` 重试 1 次后仍失败返回 `None`，链路**降级为大模型直答（不报错）**；`knowledge_point_ids` 必须落库 `messages.knowledge_point_ids`（JSON 数组）。
+- **科目枚举不得自造**：枚举字典由知识库侧维护，见 `app/kb/subjects.py::SUBJECT_REGISTRY`（只增不改，与 `doc/知识库科目枚举约定.md` 一致）；请求 `subject` 非法时回退 `DEFAULT_SUBJECT`（`cpa_acc`）。
+- **用量采集**：从 dashscope 流式响应的 `usage` 读取 `input_tokens`/`output_tokens`（Function Calling 两轮累加）；无 usage 时记 0。费用 = `tokens/1000 × 单价`，单价由管理员维护（不自动同步官方价）。
 - **新增/修改接口的落点**：schema → `app/models.py`；路由 → 对应模块 `router.py`；注册 → `app/main.py`；类型 → 前端 `types/index.ts`；文档 → `doc/接口文档.md` + 本文件 §8。
 - **认证**：需登录接口带 `Authorization: Bearer <token>`；管理员接口用 `Depends(require_admin)`。
 - **响应格式**：成功直接返回业务数据（无外层包裹）；无数据时返回 `{"message": "ok"}`；错误返回 `{"detail": "..."}`。
@@ -138,22 +155,21 @@ npx tsc --noEmit       # 类型检查
 
 ## 7. 数据库表结构
 
-SQLite（WAL），建表见 `app/database.py`。
+MySQL 8.4（机器A，InnoDB，utf8mb4），建表见 `app/database.py`（`init_db()` 启动时 `CREATE DATABASE IF NOT EXISTS` + 建 5 张表）。**无 `subjects` 表**（科目改为知识库侧枚举，见 §6）。
 
 | 表 | 关键列 | 说明 |
 |----|--------|------|
 | `users` | `id, student_id(UNIQUE), password_hash, name, role('student'/'admin'), created_at` | 用户/学生 |
-| `conversations` | `id, user_id, title, subject_id(可空,v2.0), created_at` | 会话，`subject_id` 为轻量迁移列 |
-| `messages` | `id, conversation_id, role, content, created_at` | 消息 |
-| `model_configs` | `id, provider('ali'/'deepseek'), model_name(UNIQUE), display_name, price_in, price_out, enabled, is_active, created_at` | 模型配置，`is_active=1` 为当前模型（v2.0） |
-| `usage_logs` | `id, model_name, user_id, conversation_id, prompt_tokens, completion_tokens, total_tokens, cost, created_at` | 用量与费用（v2.0） |
-| `subjects` | `id, name(UNIQUE), category('general'/'professional'), description, sort_order, created_at` | 科目（v2.0） |
+| `conversations` | `id, user_id, title, subject(VARCHAR(32),可空), created_at` | 会话，`subject` 存科目枚举值（如 `cpa_acc`） |
+| `messages` | `id, conversation_id, role, content, knowledge_point_ids(TEXT,可空), created_at` | 消息，`knowledge_point_ids` 存 KB 命中知识点编号 JSON 数组 |
+| `model_configs` | `id, provider('ali'/'deepseek'), model_name(UNIQUE), display_name, price_in, price_out, enabled, is_active, created_at` | 模型配置，`is_active=1` 为当前模型 |
+| `usage_logs` | `id, model_name, user_id, conversation_id, prompt_tokens, completion_tokens, total_tokens, cost, created_at` | 用量与费用 |
 
-> 迁移方式：`_add_column_if_missing()` 用 `PRAGMA table_info` 检测后 `ALTER TABLE ADD COLUMN`，兼容已有 `app.db`。
+> 不迁移旧 SQLite 数据；MySQL 为全新库，首次 `seed.py` 写入管理员 + 默认模型。
 
 ---
 
-## 8. 接口一览（26 个业务接口）
+## 8. 接口一览（20 个业务接口）
 
 Base URL：`http://localhost:8000`。权限：🟢 全员登录 ｜ 🔒 管理员。
 **接口明细（请求/响应/示例）是 `doc/接口文档.md` 的单一职责,本节仅作分组索引。**
@@ -161,11 +177,10 @@ Base URL：`http://localhost:8000`。权限：🟢 全员登录 ｜ 🔒 管理�
 | 模块 | 代码位置 | 数量 | 权限 | 说明 |
 |------|---------|------|------|------|
 | 认证 | `app/auth/` | 2 | 公开 / 🟢 | 登录取 JWT、当前用户信息 |
-| 对话 | `app/chat/` | 5 | 🟢 | 流式对话(SSE,支持 `subject_id`)、会话 CRUD |
-| 知识库 | `app/knowledge/` | 3 | 🔒 | 文档上传(可带 `subject_id`)/列表/删除 |
+| 对话 | `app/chat/` | 5 | 🟢 | 流式对话(SSE,支持 `subject` 枚举 + `kb_search`/`kp_ids` 事件)、会话 CRUD |
 | 管理员 | `app/admin/` | 6 | 🔒 | 学生增删改查、批量导入、使用统计 |
-| 大模型管理（v2.0） | `app/llm/` | 6 | 🔒 | 模型 CRUD、`activate` 切换、`usage` 用量费用 |
-| 科目（v2.0） | `app/subjects/` | 4 | 🟢 / 🔒 | 科目列表(全员)+ 科目 CRUD(管理员) |
+| 大模型管理 | `app/llm/` | 6 | 🔒 | 模型 CRUD、`activate` 切换、`usage` 用量费用 |
+| 科目 | `app/kb/subjects.py` | 1 | 🟢 | `GET /api/subjects` 返回已上线科目枚举 |
 
 > 另有运维接口 `GET /api/health`（健康检查，无需认证）。全部接口的路径与字段明细见 `doc/接口文档.md`。
 

@@ -26,13 +26,14 @@ export default function HomePage() {
   const [messages, setMessages] = useState<MessageOut[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
 
-  // 科目
+  // 科目（枚举由知识库侧维护，/api/subjects 仅返回已上线项，必选）
   const [subjects, setSubjects] = useState<Subject[]>([]);
-  const [selectedSubjectId, setSelectedSubjectId] = useState<number>(0);
+  const [selectedSubject, setSelectedSubject] = useState<string>("");
 
   // 流式状态
   const [streaming, setStreaming] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
+  const [kbSearching, setKbSearching] = useState(false);
   // 用 ref 累积流式内容，避免在状态更新函数中嵌套调用 setMessages
   const streamingContentRef = useRef("");
 
@@ -46,7 +47,11 @@ export default function HomePage() {
       .then(setUser)
       .catch(() => {});
     apiGet<Subject[]>("/api/subjects")
-      .then(setSubjects)
+      .then((data) => {
+        setSubjects(data);
+        // 默认选中首个已上线科目
+        if (data.length > 0) setSelectedSubject(data[0].subject);
+      })
       .catch(() => {});
   }, []);
 
@@ -73,9 +78,9 @@ export default function HomePage() {
       setCurrentId(id);
       setLoadingMessages(true);
       setMessages([]);
-      // 回显该对话的所属科目
+      // 回显该对话的所属科目（为空则保持当前选择）
       const conv = conversations.find((c) => c.id === id);
-      setSelectedSubjectId(conv?.subject_id || 0);
+      if (conv?.subject) setSelectedSubject(conv.subject);
       try {
         const data = await apiGet<MessageOut[]>(`/api/conversations/${id}`);
         setMessages(data);
@@ -92,7 +97,6 @@ export default function HomePage() {
   const handleCreateConversation = useCallback(() => {
     setCurrentId(null);
     setMessages([]);
-    setSelectedSubjectId(0);
     setError("");
   }, []);
 
@@ -119,6 +123,7 @@ export default function HomePage() {
       setError("");
       setStreaming(true);
       setStreamingContent("");
+      setKbSearching(false);
       streamingContentRef.current = "";
 
       // 先把用户消息追加到列表
@@ -133,7 +138,7 @@ export default function HomePage() {
       // 保存当前的 conversationId（可能为 null）
       const targetConversationId = currentId;
 
-      await sendChatMessage(targetConversationId, message, selectedSubjectId || null, {
+      await sendChatMessage(targetConversationId, message, selectedSubject || null, {
         onStart: (convId) => {
           // 如果是新对话，更新 currentId 并刷新列表
           if (targetConversationId === null) {
@@ -141,7 +146,11 @@ export default function HomePage() {
             loadConversations();
           }
         },
+        onKbSearch: () => {
+          setKbSearching(true);
+        },
         onDelta: (content) => {
+          setKbSearching(false);
           streamingContentRef.current += content;
           setStreamingContent((prev) => prev + content);
         },
@@ -157,6 +166,7 @@ export default function HomePage() {
           setStreamingContent("");
           streamingContentRef.current = "";
           setStreaming(false);
+          setKbSearching(false);
           // 如果是新对话，刷新对话列表获取正确标题
           if (targetConversationId === null) {
             loadConversations();
@@ -166,10 +176,11 @@ export default function HomePage() {
           setError(detail);
           setStreaming(false);
           setStreamingContent("");
+          setKbSearching(false);
         },
       });
     },
-    [currentId, loadConversations, selectedSubjectId]
+    [currentId, loadConversations, selectedSubject]
   );
 
   function handleLogout() {
@@ -186,13 +197,12 @@ export default function HomePage() {
           <div className="flex items-center gap-1.5">
             <span className="text-sm text-gray-400">科目</span>
             <select
-              value={selectedSubjectId}
-              onChange={(e) => setSelectedSubjectId(Number(e.target.value))}
+              value={selectedSubject}
+              onChange={(e) => setSelectedSubject(e.target.value)}
               className="rounded-lg border border-gray-300 px-3 py-1 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
             >
-              <option value={0}>不限科目</option>
               {subjects.map((s) => (
-                <option key={s.id} value={s.id}>{s.name}</option>
+                <option key={s.subject} value={s.subject}>{s.name}</option>
               ))}
             </select>
           </div>
@@ -254,6 +264,7 @@ export default function HomePage() {
                 messages={messages}
                 streamingContent={streamingContent}
                 streaming={streaming}
+                kbSearching={kbSearching}
               />
               <ChatInput onSend={handleSendMessage} disabled={streaming} />
             </>

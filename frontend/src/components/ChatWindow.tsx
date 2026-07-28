@@ -9,9 +9,10 @@ interface ChatWindowProps {
   messages: MessageOut[];
   streamingContent: string;
   streaming: boolean;
+  kbSearching?: boolean;
 }
 
-export function ChatWindow({ messages, streamingContent, streaming }: ChatWindowProps) {
+export function ChatWindow({ messages, streamingContent, streaming, kbSearching }: ChatWindowProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -50,6 +51,15 @@ export function ChatWindow({ messages, streamingContent, streaming }: ChatWindow
             {streaming && (
               <div className="flex justify-start">
                 <div className="max-w-[80%] rounded-2xl rounded-tl-sm bg-white px-4 py-3 shadow-sm ring-1 ring-gray-200">
+                  {kbSearching && !streamingContent && (
+                    <div className="mb-1 flex items-center gap-1.5 text-xs text-blue-500">
+                      <svg className="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      <span>正在检索知识库…</span>
+                    </div>
+                  )}
                   {streamingContent ? (
                     <div className="prose prose-sm max-w-none prose-headings:mb-2 prose-headings:mt-3 prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-code:rounded prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:text-sm">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>

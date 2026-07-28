@@ -32,7 +32,7 @@ class ConversationOut(BaseModel):
     id: int
     title: str
     created_at: str
-    subject_id: int | None = None
+    subject: str | None = None
 
 
 class MessageOut(BaseModel):
@@ -45,41 +45,15 @@ class MessageOut(BaseModel):
 class ChatRequest(BaseModel):
     conversation_id: int | None = None
     message: str
-    subject_id: int | None = None
+    subject: str | None = None
 
 
-# ========== 知识库相关 ==========
+# ========== 科目相关（枚举由知识库侧维护，见 doc/知识库科目枚举约定.md） ==========
 
-class DocumentInfo(BaseModel):
+class SubjectItem(BaseModel):
+    subject: str
     name: str
-    chunk_count: int
-    created_at: str
-    subject_id: int | None = None
-
-
-# ========== 科目相关 ==========
-
-class SubjectOut(BaseModel):
-    id: int
-    name: str
-    category: str
-    description: str = ""
-    sort_order: int = 0
-    created_at: str
-
-
-class SubjectCreate(BaseModel):
-    name: str
-    category: str = "general"
-    description: str = ""
-    sort_order: int = 0
-
-
-class SubjectUpdate(BaseModel):
-    name: str | None = None
-    category: str | None = None
-    description: str | None = None
-    sort_order: int | None = None
+    status: str
 
 
 # ========== 大模型管理相关 ==========

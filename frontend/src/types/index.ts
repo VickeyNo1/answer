@@ -24,14 +24,14 @@ export interface UserInfo {
 export interface ChatRequest {
   conversation_id: number | null;
   message: string;
-  subject_id?: number | null;
+  subject?: string | null;
 }
 
 export interface ConversationOut {
   id: number;
   title: string;
   created_at: string;
-  subject_id?: number | null;
+  subject?: string | null;
 }
 
 export interface MessageOut {
@@ -41,38 +41,12 @@ export interface MessageOut {
   created_at: string;
 }
 
-// ========== 知识库相关 ==========
-
-export interface DocumentInfo {
-  name: string;
-  chunk_count: number;
-  created_at: string;
-  subject_id?: number | null;
-}
-
-// ========== 科目相关 ==========
+// ========== 科目相关（枚举由知识库侧维护） ==========
 
 export interface Subject {
-  id: number;
+  subject: string;
   name: string;
-  category: string; // 'general' | 'professional'
-  description: string;
-  sort_order: number;
-  created_at: string;
-}
-
-export interface SubjectCreate {
-  name: string;
-  category: string;
-  description?: string;
-  sort_order?: number;
-}
-
-export interface SubjectUpdate {
-  name?: string;
-  category?: string;
-  description?: string;
-  sort_order?: number;
+  status: string; // 'online' | 'offline' | 'planned'
 }
 
 // ========== 大模型管理相关 ==========
@@ -186,8 +160,19 @@ export interface SSEErrorEvent {
   detail: string;
 }
 
+export interface SSEKbSearchEvent {
+  type: "kb_search";
+}
+
+export interface SSEKpIdsEvent {
+  type: "kp_ids";
+  kp_ids: string[];
+}
+
 export type SSEEvent =
   | SSEStartEvent
   | SSEDeltaEvent
   | SSEDoneEvent
-  | SSEErrorEvent;
+  | SSEErrorEvent
+  | SSEKbSearchEvent
+  | SSEKpIdsEvent;

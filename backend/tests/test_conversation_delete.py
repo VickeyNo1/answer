@@ -65,7 +65,7 @@ class TestConversationDelete:
         from app.database import get_db_ctx
         with get_db_ctx() as db:
             db.execute(
-                "INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)",
+                "INSERT INTO messages (conversation_id, role, content) VALUES (%s, %s, %s)",
                 (conv_id, "user", "测试消息"),
             )
             db.commit()
@@ -77,7 +77,7 @@ class TestConversationDelete:
         # 确认消息也被删除
         with get_db_ctx() as db:
             cursor = db.execute(
-                "SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ?",
+                "SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = %s",
                 (conv_id,),
             )
             assert cursor.fetchone()["cnt"] == 0

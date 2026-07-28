@@ -1,10 +1,9 @@
-"""对话路由：SSE 流式对话 + 对话 CRUD"""
+"""对话路由：SSE 流式对话（Function Calling + 知识库检索） + 对话 CRUD"""
 import json
-from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from app.auth.deps import get_current_user
-from app.database import get_db, get_db_ctx
+from app.database import get_db_ctx
 from app.models import (
     ChatRequest,
     ConversationCreate,
@@ -13,8 +12,7 @@ from app.models import (
 )
 from app.chat.memory import get_conversation_history
 from app.chat.qwen_service import build_messages, stream_chat
-from app.knowledge.embedding import embed_query
-from app.knowledge import chroma_service
+from app.kb.subjects import is_valid_subject, DEFAULT_SUBJECT
 from app.llm import store as llm_store
 
 router = APIRouter(prefix="/api", tags=["对话"])
@@ -27,74 +25,70 @@ async def chat(
     req: ChatRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    """SSE 流式对话：RAG 流程 = embedding → 检索 → 组装 prompt → 流式返回"""
+    """SSE 流式对话：大模型 Function Calling 自主决定是否检索知识库"""
     user_id = current_user["id"]
+
+    # 科目校验（不在注册表内则回退到默认科目）
+    subject = req.subject if req.subject and is_valid_subject(req.subject) else DEFAULT_SUBJECT
 
     # 1. 确定对话 ID（null 则自动新建）
     conversation_id = req.conversation_id
     if conversation_id is None:
         with get_db_ctx() as db:
             cursor = db.execute(
-                "INSERT INTO conversations (user_id, title, subject_id) VALUES (?, ?, ?)",
-                (user_id, req.message[:30] if req.message else "新对话", req.subject_id),
+                "INSERT INTO conversations (user_id, title, subject) VALUES (%s, %s, %s)",
+                (user_id, req.message[:30] if req.message else "新对话", subject),
             )
             db.commit()
             conversation_id = cursor.lastrowid
-    elif req.subject_id is not None:
+    else:
         # 已有对话：同步更新所选科目
         with get_db_ctx() as db:
             db.execute(
-                "UPDATE conversations SET subject_id = ? WHERE id = ? AND user_id = ?",
-                (req.subject_id, conversation_id, user_id),
+                "UPDATE conversations SET subject = %s WHERE id = %s AND user_id = %s",
+                (subject, conversation_id, user_id),
             )
             db.commit()
 
     # 2. 保存用户消息
     with get_db_ctx() as db:
         db.execute(
-            "INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)",
+            "INSERT INTO messages (conversation_id, role, content) VALUES (%s, %s, %s)",
             (conversation_id, "user", req.message),
         )
         db.commit()
 
-    # 3. RAG：科目加权检索知识库
-    context = None
-    try:
-        query_embedding = embed_query(req.message)
-        general_ids = _get_general_subject_ids()
-        results = chroma_service.search_weighted(
-            query_embedding, req.subject_id, general_ids, top_k=5,
-        )
-        if results:
-            context = [r["content"] for r in results]
-    except Exception:
-        # 知识库为空或检索失败时继续（不影响对话）
-        pass
-
-    # 4. 构建消息列表
+    # 3. 构建消息列表
     history = get_conversation_history(conversation_id, limit=10)
     # 排除刚存入的当前用户消息（因为还没得到回复）
     if history and history[-1]["role"] == "user" and history[-1]["content"] == req.message:
         history = history[:-1]
 
-    messages = build_messages(req.message, history, context)
+    messages = build_messages(req.message, history)
     model_name = llm_store.get_active_model()
 
-    # 5. SSE 流式生成
+    # 4. SSE 流式生成
     async def event_generator():
-        # 发送 start 事件
         yield _sse({"type": "start", "conversation_id": conversation_id})
 
         full_content = ""
         error_occurred = False
         prompt_tokens = 0
         completion_tokens = 0
+        kp_ids: list[str] = []
 
-        for chunk in stream_chat(messages, model_name):
+        for chunk in stream_chat(messages, model_name, subject):
             if "error" in chunk:
                 yield _sse({"type": "error", "detail": chunk["error"]})
                 error_occurred = True
                 break
+            if "kb_search" in chunk:
+                yield _sse({"type": "kb_search"})
+                continue
+            if "kp_ids" in chunk:
+                kp_ids = chunk["kp_ids"]
+                yield _sse({"type": "kp_ids", "kp_ids": kp_ids})
+                continue
             if "usage" in chunk:
                 prompt_tokens = chunk["usage"].get("prompt_tokens", 0)
                 completion_tokens = chunk["usage"].get("completion_tokens", 0)
@@ -114,12 +108,16 @@ async def chat(
             except Exception:
                 pass
 
-        # 保存 AI 回复到数据库
+        # 保存 AI 回复到数据库（含知识点编号，供掌握度归因）
         if not error_occurred and full_content:
             with get_db_ctx() as db:
                 cursor = db.execute(
-                    "INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)",
-                    (conversation_id, "assistant", full_content),
+                    "INSERT INTO messages (conversation_id, role, content, knowledge_point_ids) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (
+                        conversation_id, "assistant", full_content,
+                        json.dumps(kp_ids, ensure_ascii=False) if kp_ids else None,
+                    ),
                 )
                 db.commit()
                 message_id = cursor.lastrowid
@@ -143,13 +141,6 @@ def _sse(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _get_general_subject_ids() -> list[int]:
-    """获取通用类(general)科目的 id 列表，用于检索加权"""
-    with get_db_ctx() as db:
-        cursor = db.execute("SELECT id FROM subjects WHERE category = 'general'")
-        return [r["id"] for r in cursor.fetchall()]
-
-
 # ========== 对话 CRUD ==========
 
 @router.post("/conversations", status_code=status.HTTP_201_CREATED, response_model=ConversationOut)
@@ -160,22 +151,22 @@ async def create_conversation(
     """新建对话"""
     with get_db_ctx() as db:
         cursor = db.execute(
-            "INSERT INTO conversations (user_id, title) VALUES (?, ?)",
+            "INSERT INTO conversations (user_id, title) VALUES (%s, %s)",
             (current_user["id"], req.title),
         )
         db.commit()
         conv_id = cursor.lastrowid
 
         cursor = db.execute(
-            "SELECT id, title, created_at, subject_id FROM conversations WHERE id = ?",
+            "SELECT id, title, created_at, subject FROM conversations WHERE id = %s",
             (conv_id,),
         )
         row = cursor.fetchone()
         return ConversationOut(
             id=row["id"],
             title=row["title"],
-            created_at=row["created_at"],
-            subject_id=row["subject_id"],
+            created_at=str(row["created_at"]),
+            subject=row["subject"],
         )
 
 
@@ -186,8 +177,8 @@ async def list_conversations(
     """获取当前用户的对话列表（按时间降序）"""
     with get_db_ctx() as db:
         cursor = db.execute(
-            """SELECT id, title, created_at, subject_id FROM conversations
-               WHERE user_id = ?
+            """SELECT id, title, created_at, subject FROM conversations
+               WHERE user_id = %s
                ORDER BY created_at DESC""",
             (current_user["id"],),
         )
@@ -195,7 +186,7 @@ async def list_conversations(
         return [
             ConversationOut(
                 id=r["id"], title=r["title"],
-                created_at=r["created_at"], subject_id=r["subject_id"],
+                created_at=str(r["created_at"]), subject=r["subject"],
             )
             for r in rows
         ]
@@ -210,7 +201,7 @@ async def get_messages(
     with get_db_ctx() as db:
         # 验证对话属于当前用户
         cursor = db.execute(
-            "SELECT id FROM conversations WHERE id = ? AND user_id = ?",
+            "SELECT id FROM conversations WHERE id = %s AND user_id = %s",
             (conversation_id, current_user["id"]),
         )
         if cursor.fetchone() is None:
@@ -221,7 +212,7 @@ async def get_messages(
 
         cursor = db.execute(
             """SELECT id, role, content, created_at FROM messages
-               WHERE conversation_id = ?
+               WHERE conversation_id = %s
                ORDER BY created_at ASC""",
             (conversation_id,),
         )
@@ -229,7 +220,7 @@ async def get_messages(
         return [
             MessageOut(
                 id=r["id"], role=r["role"],
-                content=r["content"], created_at=r["created_at"],
+                content=r["content"], created_at=str(r["created_at"]),
             )
             for r in rows
         ]
@@ -244,7 +235,7 @@ async def delete_conversation(
     with get_db_ctx() as db:
         # 验证对话属于当前用户
         cursor = db.execute(
-            "SELECT id FROM conversations WHERE id = ? AND user_id = ?",
+            "SELECT id FROM conversations WHERE id = %s AND user_id = %s",
             (conversation_id, current_user["id"]),
         )
         if cursor.fetchone() is None:
@@ -254,8 +245,8 @@ async def delete_conversation(
             )
 
         # 删除消息和对话
-        db.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
-        db.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+        db.execute("DELETE FROM messages WHERE conversation_id = %s", (conversation_id,))
+        db.execute("DELETE FROM conversations WHERE id = %s", (conversation_id,))
         db.commit()
 
     return {"message": "ok"}

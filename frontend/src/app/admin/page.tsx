@@ -5,17 +5,13 @@ import { useRouter } from "next/navigation";
 import { getRole, clearAuth } from "@/lib/auth";
 import { StatsTab } from "@/components/admin/StatsTab";
 import { StudentTab } from "@/components/admin/StudentTab";
-import { KnowledgeTab } from "@/components/admin/KnowledgeTab";
 import { ModelTab } from "@/components/admin/ModelTab";
-import { SubjectTab } from "@/components/admin/SubjectTab";
 
-type TabKey = "stats" | "students" | "knowledge" | "models" | "subjects";
+type TabKey = "stats" | "students" | "models";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "stats", label: "统计概览" },
   { key: "students", label: "学生管理" },
-  { key: "knowledge", label: "知识库" },
-  { key: "subjects", label: "科目" },
   { key: "models", label: "大模型" },
 ];
 
@@ -87,8 +83,6 @@ export default function AdminPage() {
       <main className="flex-1 overflow-y-auto p-6">
         {activeTab === "stats" && <StatsTab />}
         {activeTab === "students" && <StudentTab />}
-        {activeTab === "knowledge" && <KnowledgeTab />}
-        {activeTab === "subjects" && <SubjectTab />}
         {activeTab === "models" && <ModelTab />}
       </main>
     </div>

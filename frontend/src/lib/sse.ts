@@ -11,6 +11,8 @@ export interface SSECallbacks {
   onDelta?: (content: string) => void;
   onDone?: (messageId: number) => void;
   onError?: (detail: string) => void;
+  onKbSearch?: () => void;
+  onKpIds?: (kpIds: string[]) => void;
 }
 
 /**
@@ -19,7 +21,7 @@ export interface SSECallbacks {
 export async function sendChatMessage(
   conversationId: number | null,
   message: string,
-  subjectId: number | null,
+  subject: string | null,
   callbacks: SSECallbacks
 ): Promise<void> {
   const token = getToken();
@@ -37,7 +39,7 @@ export async function sendChatMessage(
     body: JSON.stringify({
       conversation_id: conversationId,
       message,
-      subject_id: subjectId,
+      subject,
     }),
   });
 
@@ -87,6 +89,12 @@ export async function sendChatMessage(
             break;
           case "error":
             callbacks.onError?.(data.detail);
+            break;
+          case "kb_search":
+            callbacks.onKbSearch?.();
+            break;
+          case "kp_ids":
+            callbacks.onKpIds?.(data.kp_ids);
             break;
         }
       } catch {

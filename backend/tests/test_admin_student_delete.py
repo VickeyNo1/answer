@@ -64,12 +64,12 @@ class TestAdminStudentDelete:
         # 创建对话和消息
         with get_db_ctx() as db:
             cursor = db.execute(
-                "INSERT INTO conversations (user_id, title) VALUES (?, ?)",
+                "INSERT INTO conversations (user_id, title) VALUES (%s, %s)",
                 (student_id, "测试对话"),
             )
             conv_id = cursor.lastrowid
             db.execute(
-                "INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)",
+                "INSERT INTO messages (conversation_id, role, content) VALUES (%s, %s, %s)",
                 (conv_id, "user", "测试消息"),
             )
             db.commit()
@@ -81,11 +81,11 @@ class TestAdminStudentDelete:
         # 确认对话和消息也被删除
         with get_db_ctx() as db:
             conv_count = db.execute(
-                "SELECT COUNT(*) as cnt FROM conversations WHERE user_id = ?",
+                "SELECT COUNT(*) as cnt FROM conversations WHERE user_id = %s",
                 (student_id,),
             ).fetchone()["cnt"]
             msg_count = db.execute(
-                "SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ?",
+                "SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = %s",
                 (conv_id,),
             ).fetchone()["cnt"]
             assert conv_count == 0

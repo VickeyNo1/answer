@@ -22,7 +22,7 @@ def _verify_password(password: str, hashed: str) -> bool:
 async def login(req: LoginRequest, db=Depends(get_db)):
     """用户登录"""
     cursor = db.execute(
-        "SELECT * FROM users WHERE student_id = ?", (req.student_id,)
+        "SELECT * FROM users WHERE student_id = %s", (req.student_id,)
     )
     user = cursor.fetchone()
 
@@ -48,5 +48,5 @@ async def get_me(current_user: dict = Depends(get_current_user)):
         student_id=current_user["student_id"],
         name=current_user["name"],
         role=current_user["role"],
-        created_at=current_user["created_at"],
+        created_at=str(current_user["created_at"]),
     )

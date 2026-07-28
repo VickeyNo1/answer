@@ -107,30 +107,30 @@ class TestE2EChatSSE:
         delta_events = [e for e in events2 if e.get("type") == "delta"]
         assert len(delta_events) > 0
 
-    def test_chat_with_subject_id(self, server_available, test_student, admin_token):
-        """SSE 对话: 带 subject_id 发起对话，科目随对话持久化"""
-        # 取一个已有科目（默认 seed 应存在）
+    def test_chat_with_subject(self, server_available, test_student, admin_token):
+        """SSE 对话: 带 subject 枚举发起对话，科目随对话持久化"""
+        # /api/subjects 仅返回已上线科目（当前 cpa_acc）
         code, subjects = api_request("GET", "/api/subjects", token=test_student["token"])
         assert code == 200
-        subject_id = subjects[0]["id"] if subjects else None
+        assert len(subjects) >= 1
+        subject = subjects[0]["subject"]
 
         code, events = api_sse("/api/chat", test_student["token"], {
             "conversation_id": None,
             "message": "\u4ec0\u4e48\u662f\u4f1a\u8ba1\u51ed\u8bc1\uff1f",
-            "subject_id": subject_id,
+            "subject": subject,
         })
         assert code == 200
         start_events = [e for e in events if e.get("type") == "start"]
         assert len(start_events) > 0
         conv_id = start_events[0]["conversation_id"]
 
-        # 对话列表回显 subject_id
+        # 对话列表回显 subject
         code, convs = api_request("GET", "/api/conversations", token=test_student["token"])
         assert code == 200
         conv = next((c for c in convs if c["id"] == conv_id), None)
         assert conv is not None
-        if subject_id is not None:
-            assert conv["subject_id"] == subject_id
+        assert conv["subject"] == subject
 
     def test_chat_without_token(self, server_available):
         """无 Token 发送消息返回 401 或 403"""

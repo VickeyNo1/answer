@@ -1,4 +1,4 @@
-"""初始化脚本：默认管理员账号 + 默认大模型配置 + 默认科目"""
+"""初始化脚本：默认管理员账号 + 默认大模型配置（MySQL）"""
 import sys
 import os
 
@@ -21,18 +21,10 @@ DEFAULT_MODELS = [
     ("deepseek", "deepseek-r1", "DeepSeek R1", 0.004, 0.016, 0),
 ]
 
-# 默认科目：(name, category, description, sort_order)
-DEFAULT_SUBJECTS = [
-    ("会计常识", "general", "会计基础常识与通用概念", 1),
-    ("企业会计准则", "general", "企业会计准则与相关法规", 2),
-    ("初级会计学", "professional", "初级会计职称相关课程", 10),
-    ("中级会计学", "professional", "中级会计职称相关课程", 11),
-]
-
 
 def _seed_admin(db) -> None:
     cursor = db.execute(
-        "SELECT id FROM users WHERE student_id = ?", (ADMIN_STUDENT_ID,)
+        "SELECT id FROM users WHERE student_id = %s", (ADMIN_STUDENT_ID,)
     )
     if cursor.fetchone() is not None:
         print(f"管理员账号已存在 (student_id={ADMIN_STUDENT_ID})，跳过创建")
@@ -43,7 +35,7 @@ def _seed_admin(db) -> None:
     ).decode("utf-8")
     db.execute(
         """INSERT INTO users (student_id, password_hash, name, role)
-           VALUES (?, ?, ?, ?)""",
+           VALUES (%s, %s, %s, %s)""",
         (ADMIN_STUDENT_ID, password_hash, ADMIN_NAME, "admin"),
     )
     print("管理员账号创建成功！")
@@ -56,14 +48,14 @@ def _seed_models(db) -> None:
     created = 0
     for provider, model_name, display_name, price_in, price_out, is_active in DEFAULT_MODELS:
         cursor = db.execute(
-            "SELECT id FROM model_configs WHERE model_name = ?", (model_name,)
+            "SELECT id FROM model_configs WHERE model_name = %s", (model_name,)
         )
         if cursor.fetchone() is not None:
             continue
         db.execute(
             """INSERT INTO model_configs
                (provider, model_name, display_name, price_in, price_out, enabled, is_active)
-               VALUES (?, ?, ?, ?, ?, 1, ?)""",
+               VALUES (%s, %s, %s, %s, %s, 1, %s)""",
             (provider, model_name, display_name, price_in, price_out, is_active),
         )
         created += 1
@@ -73,33 +65,14 @@ def _seed_models(db) -> None:
         print("大模型配置已存在，跳过")
 
 
-def _seed_subjects(db) -> None:
-    created = 0
-    for name, category, description, sort_order in DEFAULT_SUBJECTS:
-        cursor = db.execute("SELECT id FROM subjects WHERE name = ?", (name,))
-        if cursor.fetchone() is not None:
-            continue
-        db.execute(
-            """INSERT INTO subjects (name, category, description, sort_order)
-               VALUES (?, ?, ?, ?)""",
-            (name, category, description, sort_order),
-        )
-        created += 1
-    if created:
-        print(f"默认科目写入 {created} 条")
-    else:
-        print("科目已存在，跳过")
-
-
 def seed():
     """初始化数据库并写入默认数据"""
-    # 先建表
+    # 先建库建表
     init_db()
 
     with get_db_ctx() as db:
         _seed_admin(db)
         _seed_models(db)
-        _seed_subjects(db)
         db.commit()
 
 

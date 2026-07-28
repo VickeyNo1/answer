@@ -15,6 +15,7 @@ backend/uploads/
 # ===== 环境变量 =====
 .env
 *.env
+.env.*
 # 保留示例文件
 !.env.example
 

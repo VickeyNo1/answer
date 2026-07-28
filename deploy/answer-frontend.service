@@ -1,0 +1,17 @@
+[Unit]
+Description=Answer Frontend (Next.js)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 部署目录（按实际调整）
+WorkingDirectory=/opt/answer/frontend
+Environment=NODE_ENV=production
+# 仅监听本机，由 Nginx 反向代理对外；Next.js 读取 .env.production 里的 NEXT_PUBLIC_API_URL（构建时已注入）
+ExecStart=/usr/bin/npm run start -- -H 127.0.0.1 -p 3000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

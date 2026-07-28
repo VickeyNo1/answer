@@ -11,15 +11,17 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_HOURS: int = 24
 
-    # 数据库路径
-    DATABASE_URL: str = "./data/app.db"
+    # MySQL（机器A：开发用公网 8.134.97.196，生产用私网 172.22.207.228）
+    MYSQL_HOST: str = "127.0.0.1"
+    MYSQL_PORT: int = 3306
+    MYSQL_USER: str = "root"
+    MYSQL_PASSWORD: str = ""
+    MYSQL_DB: str = "answer"
 
-    # ChromaDB 路径
-    CHROMA_DB_PATH: str = "./data/chroma_db"
-
-    # 上传文件目录
-    UPLOAD_DIR: str = "./uploads"
-    MAX_FILE_SIZE_MB: int = 10
+    # 知识库检索服务（机器A :8100，生产走私网）
+    KB_BASE_URL: str = "http://172.22.207.228:8100"
+    KB_TOKEN: str = ""
+    KB_TIMEOUT: int = 10
 
     # CORS 允许的前端域名
     CORS_ORIGINS: str = "http://localhost:3000"

@@ -32,11 +32,11 @@ class TestConversationMessages:
         from app.database import get_db_ctx
         with get_db_ctx() as db:
             db.execute(
-                "INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)",
+                "INSERT INTO messages (conversation_id, role, content) VALUES (%s, %s, %s)",
                 (conv_id, "user", "什么是借贷记账法？"),
             )
             db.execute(
-                "INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)",
+                "INSERT INTO messages (conversation_id, role, content) VALUES (%s, %s, %s)",
                 (conv_id, "assistant", "借贷记账法是一种复式记账方法。"),
             )
             db.commit()
@@ -85,11 +85,11 @@ class TestConversationMessages:
         from app.database import get_db_ctx
         with get_db_ctx() as db:
             db.execute(
-                "INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)",
+                "INSERT INTO messages (conversation_id, role, content) VALUES (%s, %s, %s)",
                 (conv_id, "user", "第一条"),
             )
             db.execute(
-                "INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)",
+                "INSERT INTO messages (conversation_id, role, content) VALUES (%s, %s, %s)",
                 (conv_id, "assistant", "第二条"),
             )
             db.commit()

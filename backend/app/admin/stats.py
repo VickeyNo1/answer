@@ -19,7 +19,7 @@ def get_stats() -> dict:
             SELECT COUNT(DISTINCT c.user_id) as cnt
             FROM conversations c
             JOIN messages m ON m.conversation_id = c.id
-            WHERE DATE(m.created_at) = DATE('now')
+            WHERE DATE(m.created_at) = CURDATE()
             """
         )
         today_active_users = cursor.fetchone()["cnt"]

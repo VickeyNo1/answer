@@ -27,7 +27,7 @@ def get_current_user(
         )
 
     # 从数据库查询用户
-    cursor = db.execute("SELECT * FROM users WHERE id = ?", (int(user_id),))
+    cursor = db.execute("SELECT * FROM users WHERE id = %s", (int(user_id),))
     user = cursor.fetchone()
     if user is None:
         raise HTTPException(

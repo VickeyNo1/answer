@@ -1,37 +1,56 @@
 # -*- coding: utf-8 -*-
 """共享测试 fixtures
 
-在导入 app 之前设置测试环境变量，确保使用独立的测试数据库。
+使用独立的 MySQL 测试库（MYSQL_DB=answer_test）。
+MySQL 不可达时整体 skip，不影响本地无数据库环境。
+在导入 app 之前设置测试环境变量。
 """
 import os
 import sys
-import shutil
 
 # ---- 设置测试环境变量（必须在导入 app 之前）----
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.dirname(TEST_DIR)
 
-# 测试用独立数据库和路径
-os.environ["DATABASE_URL"] = "./data/test.db"
-os.environ["CHROMA_DB_PATH"] = "./data/chroma_test"
-os.environ["UPLOAD_DIR"] = "./uploads_test"
-os.environ["CORS_ORIGINS"] = "http://localhost:3000"
+# 使用独立测试库，避免污染开发库
+os.environ["MYSQL_DB"] = "answer_test"
+os.environ.setdefault("CORS_ORIGINS", "http://localhost:3000")
 
 # 将 backend 加入 sys.path
 sys.path.insert(0, BACKEND_DIR)
 
 import pytest
 import bcrypt
+import pymysql
 from fastapi.testclient import TestClient
 
 from app.config import get_settings
-from app.database import init_db, get_db_ctx
-from app.auth.jwt_handler import create_access_token
 
 # ---- 清理缓存，确保测试环境变量生效 ----
 get_settings.cache_clear()
 
-# 导入 app（此时会读取测试环境变量）
+
+def _mysql_available() -> bool:
+    """探测 MySQL 是否可达（不带库名，避免库不存在导致误判）"""
+    s = get_settings()
+    try:
+        conn = pymysql.connect(
+            host=s.MYSQL_HOST, port=s.MYSQL_PORT,
+            user=s.MYSQL_USER, password=s.MYSQL_PASSWORD,
+            charset="utf8mb4", connect_timeout=5,
+        )
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+
+# MySQL 是否可达（不可达时所有 DB 相关测试整体 skip）
+MYSQL_OK = _mysql_available()
+
+
+from app.database import init_db, get_db_ctx
+from app.auth.jwt_handler import create_access_token
 from app.main import app
 
 
@@ -41,49 +60,56 @@ def settings():
     return get_settings()
 
 
+def _drop_test_db():
+    """删除测试库（teardown 清理）"""
+    s = get_settings()
+    conn = pymysql.connect(
+        host=s.MYSQL_HOST, port=s.MYSQL_PORT,
+        user=s.MYSQL_USER, password=s.MYSQL_PASSWORD,
+        charset="utf8mb4", connect_timeout=5,
+    )
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"DROP DATABASE IF EXISTS `{s.MYSQL_DB}`")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def setup_database():
-    """会话级：初始化测试数据库 + 创建 admin 和 student 账号"""
-    db_path = get_settings().DATABASE_URL
-    chroma_path = get_settings().CHROMA_DB_PATH
-    upload_dir = get_settings().UPLOAD_DIR
+    """会话级：重建测试库 + 建表 + 创建 admin 和 student 账号
 
-    # 清理旧测试数据
-    if os.path.exists(db_path):
-        os.remove(db_path)
-    if os.path.exists(chroma_path):
-        shutil.rmtree(chroma_path, ignore_errors=True)
-    if os.path.exists(upload_dir):
-        shutil.rmtree(upload_dir, ignore_errors=True)
-    os.makedirs(upload_dir, exist_ok=True)
+    MySQL 不可达时整体 skip。
+    """
+    if not MYSQL_OK:
+        pytest.skip("MySQL 不可达，跳过需要数据库的测试")
 
-    # 建表
+    # 先清理旧测试库，确保 AUTO_INCREMENT 从 1 开始
+    _drop_test_db()
+
+    # 建库建表
     init_db()
 
-    # 创建 admin 和 student 账号
+    # 创建 admin(id=1) 和 student(id=2) 账号
     with get_db_ctx() as db:
         admin_hash = bcrypt.hashpw(b"admin123", bcrypt.gensalt()).decode("utf-8")
         student_hash = bcrypt.hashpw(b"student123", bcrypt.gensalt()).decode("utf-8")
 
         db.execute(
-            "INSERT INTO users (student_id, password_hash, name, role) VALUES (?, ?, ?, 'admin')",
+            "INSERT INTO users (student_id, password_hash, name, role) VALUES (%s, %s, %s, 'admin')",
             ("admin", admin_hash, "管理员"),
         )
         db.execute(
-            "INSERT INTO users (student_id, password_hash, name, role) VALUES (?, ?, ?, 'student')",
+            "INSERT INTO users (student_id, password_hash, name, role) VALUES (%s, %s, %s, 'student')",
             ("2024001", student_hash, "测试学生"),
         )
         db.commit()
 
     yield
 
-    # 会话结束后清理
-    if os.path.exists(db_path):
-        os.remove(db_path)
-    if os.path.exists(chroma_path):
-        shutil.rmtree(chroma_path, ignore_errors=True)
-    if os.path.exists(upload_dir):
-        shutil.rmtree(upload_dir, ignore_errors=True)
+    # 会话结束后清理测试库
+    _drop_test_db()
 
 
 @pytest.fixture(scope="session")
