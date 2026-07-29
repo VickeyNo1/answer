@@ -50,6 +50,7 @@ MYSQL_OK = _mysql_available()
 
 
 from app.database import init_db, get_db_ctx
+from app.settings_store import SETTING_DEFAULTS
 from app.auth.jwt_handler import create_access_token
 from app.main import app
 
@@ -104,6 +105,13 @@ def setup_database():
             "INSERT INTO users (student_id, password_hash, name, role) VALUES (%s, %s, %s, 'student')",
             ("2024001", student_hash, "测试学生"),
         )
+
+        # 幂等写入全局设置初始键值（与 seed.py 一致，供设置/配额相关测试使用）
+        for key, value in SETTING_DEFAULTS.items():
+            db.execute(
+                "INSERT INTO app_settings (setting_key, setting_value) VALUES (%s, %s)",
+                (key, str(value)),
+            )
         db.commit()
 
     yield

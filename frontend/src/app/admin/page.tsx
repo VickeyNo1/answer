@@ -6,13 +6,15 @@ import { getRole, clearAuth } from "@/lib/auth";
 import { StatsTab } from "@/components/admin/StatsTab";
 import { StudentTab } from "@/components/admin/StudentTab";
 import { ModelTab } from "@/components/admin/ModelTab";
+import { OperationsTab } from "@/components/admin/OperationsTab";
 
-type TabKey = "stats" | "students" | "models";
+type TabKey = "stats" | "students" | "models" | "operations";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "stats", label: "统计概览" },
   { key: "students", label: "学生管理" },
   { key: "models", label: "大模型" },
+  { key: "operations", label: "运营报表" },
 ];
 
 export default function AdminPage() {
@@ -84,6 +86,7 @@ export default function AdminPage() {
         {activeTab === "stats" && <StatsTab />}
         {activeTab === "students" && <StudentTab />}
         {activeTab === "models" && <ModelTab />}
+        {activeTab === "operations" && <OperationsTab />}
       </main>
     </div>
   );

@@ -17,6 +17,15 @@ export interface UserInfo {
   name: string;
   role: string;
   created_at: string;
+  // v4.0 权益覆盖值（null=跟随全局默认）
+  daily_question_limit?: number | null;
+  memory_enabled?: boolean | null;
+}
+
+// v4.0 学生自助改密码
+export interface PasswordChangeRequest {
+  old_password: string;
+  new_password: string;
 }
 
 // ========== 对话相关 ==========
@@ -138,6 +147,81 @@ export interface BatchImportResult {
   }[];
 }
 
+// ========== v4.0 M1：反馈相关 ==========
+
+export interface FeedbackCreate {
+  message_id: number;
+  rating: "up" | "down";
+  reason?: string;
+}
+
+export interface FeedbackItem {
+  id: number;
+  rating: "up" | "down";
+  reason: string | null;
+  student_id: string;
+  student_name: string;
+  question: string | null;
+  answer: string;
+  knowledge_point_ids: string[];
+  created_at: string;
+}
+
+export interface PaginatedFeedbacks {
+  total: number;
+  items: FeedbackItem[];
+}
+
+// ========== v4.0 M1：检索质量报表 ==========
+
+export interface KbStatsByDay {
+  date: string;
+  total: number;
+  empty: number;
+  degraded: number;
+}
+
+export interface KbStats {
+  total: number;
+  empty_count: number;
+  empty_rate: number;
+  degraded_count: number;
+  avg_elapsed_ms: number;
+  by_day: KbStatsByDay[];
+  by_status: Record<string, number>;
+}
+
+export interface HotKp {
+  kp_id: string;
+  count: number;
+}
+
+// ========== v4.0 M1：全局设置与学生权益 ==========
+
+export interface AppSettings {
+  daily_question_limit_default: number;
+  memory_enabled_default: boolean;
+  chat_concurrency: number;
+  chat_queue_size: number;
+  profile_update_interval: number;
+}
+
+export type AppSettingsUpdate = Partial<AppSettings>;
+
+export interface Entitlements {
+  daily_question_limit: number | null;
+  memory_enabled: boolean | null;
+}
+
+// ========== v4.0 M1：知识库引用 ==========
+
+export interface KbRef {
+  kp_id: string;
+  chapter: string;
+  title: string;
+  snippet: string;
+}
+
 // ========== SSE 事件类型 ==========
 
 export interface SSEStartEvent {
@@ -169,10 +253,31 @@ export interface SSEKpIdsEvent {
   kp_ids: string[];
 }
 
+// v4.0 新增：排队事件（入队推一次，每前进一位再推一次）
+export interface SSEQueueEvent {
+  type: "queue";
+  position: number;
+}
+
+// v4.0 新增：知识库引用事件（检索命中后推送）
+export interface SSEKbRefsEvent {
+  type: "kb_refs";
+  refs: KbRef[];
+}
+
+// v4.0 新增：追问建议事件（正文结束后、done 之前推送）
+export interface SSESuggestionsEvent {
+  type: "suggestions";
+  items: string[];
+}
+
 export type SSEEvent =
   | SSEStartEvent
   | SSEDeltaEvent
   | SSEDoneEvent
   | SSEErrorEvent
   | SSEKbSearchEvent
-  | SSEKpIdsEvent;
+  | SSEKpIdsEvent
+  | SSEQueueEvent
+  | SSEKbRefsEvent
+  | SSESuggestionsEvent;

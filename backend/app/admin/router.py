@@ -1,5 +1,8 @@
-"""管理员模块：学生 CRUD + Excel 批量导入 + 统计数据"""
+"""管理员模块：学生 CRUD + Excel 批量导入 + 统计数据 + 全局设置/权益 + 反馈与检索报表（v4.0）"""
 import io
+import json
+from collections import Counter
+
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, status
 from openpyxl import load_workbook
@@ -7,12 +10,21 @@ from openpyxl import load_workbook
 from app.auth.deps import require_admin
 from app.database import get_db, get_db_ctx
 from app.models import (
+    AppSettingsOut,
+    AppSettingsUpdate,
+    EntitlementsUpdate,
+    FeedbackItem,
+    FeedbackListOut,
+    HotKpItem,
+    KbStatsByDay,
+    KbStatsOut,
     StudentCreate,
     StudentUpdate,
     UserInfo,
     StatsResponse,
 )
 from app.admin.stats import get_stats
+from app import settings_store
 
 router = APIRouter(prefix="/api/admin", tags=["管理员"])
 
@@ -23,13 +35,16 @@ def _hash_password(password: str) -> str:
 
 
 def _row_to_userinfo(row) -> dict:
-    """将查询结果行转换为 UserInfo 兼容的 dict"""
+    """将查询结果行转换为 UserInfo 兼容的 dict（含权益覆盖列，NULL=跟随全局）"""
+    memory_enabled = row["memory_enabled"]
     return {
         "id": row["id"],
         "student_id": row["student_id"],
         "name": row["name"],
         "role": row["role"],
         "created_at": str(row["created_at"]),
+        "daily_question_limit": row["daily_question_limit"],
+        "memory_enabled": bool(memory_enabled) if memory_enabled is not None else None,
     }
 
 
@@ -94,7 +109,8 @@ async def list_students(
         params.extend([size, offset])
         cursor = db.execute(
             f"""
-            SELECT id, student_id, name, role, created_at
+            SELECT id, student_id, name, role, created_at,
+                   daily_question_limit, memory_enabled
             FROM users {where}
             ORDER BY created_at DESC
             LIMIT %s OFFSET %s
@@ -295,3 +311,234 @@ async def get_admin_stats(
 ):
     """获取系统统计数据"""
     return get_stats()
+
+
+# ========== 全局设置（v4.0 M1） ==========
+
+
+@router.get("/settings", response_model=AppSettingsOut)
+async def get_app_settings(
+    admin: dict = Depends(require_admin),
+):
+    """获取全局设置（内存缓存，值已按键转型）"""
+    return settings_store.get_all()
+
+
+@router.put("/settings")
+async def update_app_settings(
+    req: AppSettingsUpdate,
+    admin: dict = Depends(require_admin),
+    db=Depends(get_db),
+):
+    """部分更新全局设置（只传要改的键），更新后刷新内存缓存"""
+    updates = {
+        key: int(value)
+        for key, value in req.model_dump(exclude_unset=True).items()
+        if value is not None
+    }
+    if updates:
+        settings_store.update_settings(db, updates)
+    return {"message": "ok"}
+
+
+# ========== 单个学生权益（v4.0 M1） ==========
+
+
+@router.put("/students/{student_id}/entitlements")
+async def update_student_entitlements(
+    student_id: int,
+    req: EntitlementsUpdate,
+    admin: dict = Depends(require_admin),
+    db=Depends(get_db),
+):
+    """设置单个学生权益覆盖值（null=恢复跟随全局默认）"""
+    cursor = db.execute(
+        "SELECT id FROM users WHERE id = %s AND role = 'student'", (student_id,)
+    )
+    if cursor.fetchone() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="学生不存在",
+        )
+
+    provided = req.model_dump(exclude_unset=True)
+    updates = []
+    params = []
+    if "daily_question_limit" in provided:
+        updates.append("daily_question_limit = %s")
+        params.append(provided["daily_question_limit"])
+    if "memory_enabled" in provided:
+        updates.append("memory_enabled = %s")
+        value = provided["memory_enabled"]
+        params.append(int(value) if value is not None else None)
+
+    if updates:
+        params.append(student_id)
+        db.execute(
+            f"UPDATE users SET {', '.join(updates)} WHERE id = %s", params
+        )
+        db.commit()
+    return {"message": "ok"}
+
+
+# ========== 反馈明细（v4.0 M1） ==========
+
+
+@router.get("/feedbacks", response_model=FeedbackListOut)
+async def list_feedbacks(
+    rating: str | None = Query(None, description="up / down 筛选"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    admin: dict = Depends(require_admin),
+    db=Depends(get_db),
+):
+    """反馈明细列表（按时间降序分页；「上一条学生提问」应用层关联）"""
+    where = ""
+    params: list = []
+    if rating:
+        where = "WHERE f.rating = %s"
+        params.append(rating)
+
+    cursor = db.execute(
+        f"SELECT COUNT(*) AS cnt FROM feedbacks f {where}", params
+    )
+    total = int(cursor.fetchone()["cnt"])
+
+    offset = (page - 1) * page_size
+    cursor = db.execute(
+        f"""SELECT f.id, f.rating, f.reason, f.created_at, f.message_id,
+                   u.student_id, u.name AS student_name,
+                   m.content AS answer, m.knowledge_point_ids, m.conversation_id
+            FROM feedbacks f
+            JOIN users u ON f.user_id = u.id
+            JOIN messages m ON f.message_id = m.id
+            {where}
+            ORDER BY f.created_at DESC, f.id DESC
+            LIMIT %s OFFSET %s""",
+        params + [page_size, offset],
+    )
+    rows = list(cursor.fetchall())
+
+    items = []
+    for row in rows:
+        # 上一条学生提问：同会话中 id 小于该 assistant 消息的最近一条 user 消息
+        cursor = db.execute(
+            """SELECT content FROM messages
+               WHERE conversation_id = %s AND id < %s AND role = 'user'
+               ORDER BY id DESC LIMIT 1""",
+            (row["conversation_id"], row["message_id"]),
+        )
+        question_row = cursor.fetchone()
+        try:
+            kp_ids = json.loads(row["knowledge_point_ids"]) if row["knowledge_point_ids"] else []
+        except (TypeError, ValueError):
+            kp_ids = []
+        items.append(FeedbackItem(
+            id=row["id"],
+            rating=row["rating"],
+            reason=row["reason"],
+            student_id=row["student_id"],
+            student_name=row["student_name"],
+            question=question_row["content"] if question_row else None,
+            answer=row["answer"],
+            knowledge_point_ids=kp_ids,
+            created_at=str(row["created_at"]),
+        ))
+
+    return FeedbackListOut(total=total, items=items)
+
+
+# ========== 检索可观测报表（v4.0 M1） ==========
+
+KB_STATUSES = ("ok", "empty", "timeout", "http_error", "code_error", "degraded")
+
+
+@router.get("/kb/stats", response_model=KbStatsOut)
+async def get_kb_stats(
+    days: int = Query(7, ge=1, le=365),
+    admin: dict = Depends(require_admin),
+    db=Depends(get_db),
+):
+    """检索质量统计（空结果率/降级数/平均耗时/按天/按状态）"""
+    time_where = "WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL %s DAY)"
+
+    cursor = db.execute(
+        f"""SELECT COUNT(*) AS total,
+                   SUM(status = 'empty') AS empty_count,
+                   SUM(status = 'degraded') AS degraded_count,
+                   AVG(elapsed_ms) AS avg_elapsed
+            FROM kb_search_logs {time_where}""",
+        (days,),
+    )
+    row = cursor.fetchone()
+    # PyMySQL 聚合陷阱：SUM/AVG 返回 Decimal，需 int()/float() 包裹
+    total = int(row["total"] or 0)
+    empty_count = int(row["empty_count"] or 0)
+    degraded_count = int(row["degraded_count"] or 0)
+    avg_elapsed_ms = int(float(row["avg_elapsed"])) if row["avg_elapsed"] is not None else 0
+
+    cursor = db.execute(
+        f"""SELECT DATE(created_at) AS d, COUNT(*) AS total,
+                   SUM(status = 'empty') AS empty_cnt,
+                   SUM(status = 'degraded') AS degraded_cnt
+            FROM kb_search_logs {time_where}
+            GROUP BY DATE(created_at) ORDER BY d""",
+        (days,),
+    )
+    by_day = [
+        KbStatsByDay(
+            date=str(r["d"]),  # DATE() 返回 date，需 str()
+            total=int(r["total"]),
+            empty=int(r["empty_cnt"] or 0),
+            degraded=int(r["degraded_cnt"] or 0),
+        )
+        for r in cursor.fetchall()
+    ]
+
+    cursor = db.execute(
+        f"""SELECT status, COUNT(*) AS cnt FROM kb_search_logs {time_where}
+            GROUP BY status""",
+        (days,),
+    )
+    by_status = {s: 0 for s in KB_STATUSES}
+    for r in cursor.fetchall():
+        by_status[r["status"]] = int(r["cnt"])
+
+    return KbStatsOut(
+        total=total,
+        empty_count=empty_count,
+        empty_rate=round(empty_count / total, 3) if total else 0.0,
+        degraded_count=degraded_count,
+        avg_elapsed_ms=avg_elapsed_ms,
+        by_day=by_day,
+        by_status=by_status,
+    )
+
+
+@router.get("/kb/hot-kps", response_model=list[HotKpItem])
+async def get_kb_hot_kps(
+    days: int = Query(30, ge=1, le=365),
+    top: int = Query(10, ge=1, le=100),
+    admin: dict = Depends(require_admin),
+    db=Depends(get_db),
+):
+    """高频知识点 TopN（kp_ids JSON 数组 Python 侧展开聚合，量小无性能问题）"""
+    cursor = db.execute(
+        """SELECT kp_ids FROM kb_search_logs
+           WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+             AND kp_ids IS NOT NULL""",
+        (days,),
+    )
+    counter: Counter = Counter()
+    for row in cursor.fetchall():
+        try:
+            kp_list = json.loads(row["kp_ids"])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(kp_list, list):
+            counter.update(str(kp) for kp in kp_list)
+
+    return [
+        HotKpItem(kp_id=kp_id, count=count)
+        for kp_id, count in counter.most_common(top)
+    ]

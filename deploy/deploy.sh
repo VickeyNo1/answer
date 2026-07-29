@@ -24,15 +24,21 @@ systemctl restart answer-backend
 systemctl restart answer-frontend
 systemctl reload-or-restart nginx
 
-echo "==> [5/5] 健康检查（最多等 30 秒）"
+echo "==> [5/5] 健康检查（最多等 30 秒，需 status=ok，degraded 不算成功）"
 ok=""
+body=""
 for i in $(seq 1 30); do
-  if curl -fsS http://127.0.0.1:8000/api/health 2>/dev/null; then ok=1; break; fi
+  body="$(curl -fsS http://127.0.0.1:8000/api/health 2>/dev/null || true)"
+  if printf '%s' "$body" | grep -q '"status": *"ok"'; then ok=1; break; fi
   sleep 1
 done
 if [ -n "$ok" ]; then
-  echo
+  echo "$body"
   echo "部署完成 ✅  外部访问： http://8.148.219.179/"
+elif printf '%s' "$body" | grep -q '"status": *"degraded"'; then
+  echo "$body"
+  echo "后端已启动但依赖异常(degraded)，请检查 MySQL/知识库： journalctl -u answer-backend -n 50 --no-pager"
+  exit 1
 else
   echo "后端健康检查失败，请查看： journalctl -u answer-backend -n 50 --no-pager"
   exit 1

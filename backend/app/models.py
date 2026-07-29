@@ -22,6 +22,12 @@ class UserInfo(BaseModel):
     created_at: str
 
 
+class PasswordUpdate(BaseModel):
+    """PUT /api/me/password 请求"""
+    old_password: str
+    new_password: str
+
+
 # ========== 对话相关 ==========
 
 class ConversationCreate(BaseModel):
@@ -46,6 +52,85 @@ class ChatRequest(BaseModel):
     conversation_id: int | None = None
     message: str
     subject: str | None = None
+
+
+# ========== 反馈相关（v4.0 M1） ==========
+
+class FeedbackCreate(BaseModel):
+    """POST /api/feedback 请求"""
+    message_id: int
+    rating: str  # up=点赞 / down=点踩
+    reason: str | None = None  # rating=down 时必填（后端校验）
+
+
+class FeedbackItem(BaseModel):
+    """GET /api/admin/feedbacks 列表项"""
+    id: int
+    rating: str
+    reason: str | None = None
+    student_id: str
+    student_name: str
+    question: str | None = None  # 上一条学生提问（应用层关联）
+    answer: str
+    knowledge_point_ids: list[str] = []
+    created_at: str
+
+
+class FeedbackListOut(BaseModel):
+    total: int
+    items: list[FeedbackItem]
+
+
+# ========== 检索可观测相关（v4.0 M1） ==========
+
+class KbStatsByDay(BaseModel):
+    date: str
+    total: int
+    empty: int
+    degraded: int
+
+
+class KbStatsOut(BaseModel):
+    """GET /api/admin/kb/stats 响应"""
+    total: int
+    empty_count: int
+    empty_rate: float
+    degraded_count: int
+    avg_elapsed_ms: int
+    by_day: list[KbStatsByDay]
+    by_status: dict[str, int]
+
+
+class HotKpItem(BaseModel):
+    """GET /api/admin/kb/hot-kps 列表项"""
+    kp_id: str
+    count: int
+
+
+# ========== 全局设置与权益（v4.0 M1） ==========
+
+class AppSettingsOut(BaseModel):
+    """GET /api/admin/settings 响应（值已按键转型）"""
+    daily_question_limit_default: int
+    memory_enabled_default: bool
+    chat_concurrency: int
+    chat_queue_size: int
+    profile_update_interval: int
+
+
+class AppSettingsUpdate(BaseModel):
+    """PUT /api/admin/settings 请求（部分更新，只传要改的键）"""
+    daily_question_limit_default: int | None = None
+    memory_enabled_default: bool | None = None
+    chat_concurrency: int | None = None
+    chat_queue_size: int | None = None
+    profile_update_interval: int | None = None
+
+
+class EntitlementsUpdate(BaseModel):
+    """PUT /api/admin/students/{id}/entitlements 请求（null=恢复跟随全局）"""
+    daily_question_limit: int | None = None
+    memory_enabled: bool | None = None
 
 
 # ========== 科目相关（枚举由知识库侧维护，见 doc/知识库科目枚举约定.md） ==========

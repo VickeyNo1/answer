@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { apiGet, apiPost, apiPut, apiDelete, apiUpload } from "@/lib/api";
-import type { UserInfo, PaginatedStudents, StudentCreate } from "@/types";
+import type { UserInfo, PaginatedStudents, StudentCreate, AppSettings, Entitlements } from "@/types";
 
 export function StudentTab() {
   const [students, setStudents] = useState<UserInfo[]>([]);
@@ -17,6 +17,13 @@ export function StudentTab() {
   const [showCreate, setShowCreate] = useState(false);
   const [editingStudent, setEditingStudent] = useState<UserInfo | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+
+  // 权益行内编辑状态（entLimit 空串=跟随全局；entMemory: "null"/"1"/"0"）
+  const [entEditingId, setEntEditingId] = useState<number | null>(null);
+  const [entLimit, setEntLimit] = useState("");
+  const [entMemory, setEntMemory] = useState("null");
+  const [entSaving, setEntSaving] = useState(false);
 
   // 批量导入
   const [batchResult, setBatchResult] = useState<{
@@ -84,6 +91,31 @@ export function StudentTab() {
     }
   }
 
+  /** 开始行内编辑权益（配额/记忆开关） */
+  function startEntEdit(s: UserInfo) {
+    setEntEditingId(s.id);
+    setEntLimit(s.daily_question_limit != null ? String(s.daily_question_limit) : "");
+    setEntMemory(s.memory_enabled == null ? "null" : s.memory_enabled ? "1" : "0");
+  }
+
+  /** 保存权益（置空=跟随全局） */
+  async function handleEntSave(id: number) {
+    const data: Entitlements = {
+      daily_question_limit: entLimit.trim() === "" ? null : Number(entLimit),
+      memory_enabled: entMemory === "null" ? null : entMemory === "1",
+    };
+    setEntSaving(true);
+    try {
+      await apiPut(`/api/admin/students/${id}/entitlements`, data);
+      setEntEditingId(null);
+      loadStudents();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "权益保存失败");
+    } finally {
+      setEntSaving(false);
+    }
+  }
+
   async function handleBatchImport(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -138,6 +170,12 @@ export function StudentTab() {
           </button>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowSettings(true)}
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+          >
+            全局设置
+          </button>
           <input
             ref={fileInputRef}
             type="file"
@@ -192,6 +230,8 @@ export function StudentTab() {
             <tr className="border-b border-gray-200 bg-gray-50 text-left text-gray-500">
               <th className="px-4 py-3 font-medium">学号</th>
               <th className="px-4 py-3 font-medium">姓名</th>
+              <th className="px-4 py-3 font-medium">每日配额</th>
+              <th className="px-4 py-3 font-medium">记忆开关</th>
               <th className="px-4 py-3 font-medium">创建时间</th>
               <th className="px-4 py-3 font-medium text-right">操作</th>
             </tr>
@@ -199,20 +239,86 @@ export function StudentTab() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={4} className="px-4 py-8 text-center text-gray-400">加载中...</td>
+                <td colSpan={6} className="px-4 py-8 text-center text-gray-400">加载中...</td>
               </tr>
             ) : students.length === 0 ? (
               <tr>
-                <td colSpan={4} className="px-4 py-8 text-center text-gray-400">暂无学生数据</td>
+                <td colSpan={6} className="px-4 py-8 text-center text-gray-400">暂无学生数据</td>
               </tr>
             ) : (
               students.map((s) => (
                 <tr key={s.id} className="border-b border-gray-100 last:border-0 hover:bg-gray-50">
                   <td className="px-4 py-3 text-gray-900">{s.student_id}</td>
                   <td className="px-4 py-3 text-gray-900">{s.name}</td>
+                  {entEditingId === s.id ? (
+                    <>
+                      <td className="px-4 py-3">
+                        <input
+                          type="number"
+                          min={0}
+                          value={entLimit}
+                          onChange={(e) => setEntLimit(e.target.value)}
+                          placeholder="空=跟随全局"
+                          className="w-24 rounded-lg border border-gray-300 px-2 py-1 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <select
+                          value={entMemory}
+                          onChange={(e) => setEntMemory(e.target.value)}
+                          className="rounded-lg border border-gray-300 px-2 py-1 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                        >
+                          <option value="null">跟随全局</option>
+                          <option value="1">开</option>
+                          <option value="0">关</option>
+                        </select>
+                      </td>
+                    </>
+                  ) : (
+                    <>
+                      <td className="px-4 py-3 text-gray-500">
+                        {s.daily_question_limit != null ? s.daily_question_limit : (
+                          <span className="text-gray-400">跟随全局</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-gray-500">
+                        {s.memory_enabled == null ? (
+                          <span className="text-gray-400">跟随全局</span>
+                        ) : s.memory_enabled ? (
+                          <span className="text-green-600">开</span>
+                        ) : (
+                          <span className="text-gray-500">关</span>
+                        )}
+                      </td>
+                    </>
+                  )}
                   <td className="px-4 py-3 text-gray-500">{s.created_at}</td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-2">
+                      {entEditingId === s.id ? (
+                        <>
+                          <button
+                            onClick={() => handleEntSave(s.id)}
+                            disabled={entSaving}
+                            className="rounded-lg bg-blue-600 px-3 py-1 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+                          >
+                            {entSaving ? "保存中..." : "保存权益"}
+                          </button>
+                          <button
+                            onClick={() => setEntEditingId(null)}
+                            className="rounded-lg px-3 py-1 text-sm text-gray-500 hover:bg-gray-100"
+                          >
+                            取消
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          onClick={() => startEntEdit(s)}
+                          className="rounded-lg px-3 py-1 text-sm text-gray-600 hover:bg-gray-100"
+                        >
+                          权益
+                        </button>
+                      )}
                       <button
                         onClick={() => setEditingStudent(s)}
                         className="rounded-lg px-3 py-1 text-sm text-blue-600 hover:bg-blue-50"
@@ -292,6 +398,11 @@ export function StudentTab() {
           onClose={() => setEditingStudent(null)}
           onSave={handleUpdate}
         />
+      )}
+
+      {/* 全局设置弹窗 */}
+      {showSettings && (
+        <GlobalSettingsModal onClose={() => setShowSettings(false)} />
       )}
     </div>
   );
@@ -494,5 +605,105 @@ function Field({
       </label>
       {children}
     </div>
+  );
+}
+
+/** 全局设置弹窗（GET/PUT /api/admin/settings，app_settings 各键） */
+function GlobalSettingsModal({ onClose }: { onClose: () => void }) {
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    apiGet<AppSettings>("/api/admin/settings")
+      .then(setSettings)
+      .catch((err) => setError(err instanceof Error ? err.message : "加载失败"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!settings) return;
+    setSaving(true);
+    setError("");
+    try {
+      await apiPut("/api/admin/settings", settings);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function setNum(key: keyof AppSettings, value: string) {
+    setSettings((prev) => (prev ? { ...prev, [key]: Number(value) } : prev));
+  }
+
+  const numberFields: { key: keyof AppSettings; label: string }[] = [
+    { key: "daily_question_limit_default", label: "每人每日提问上限（全局默认）" },
+    { key: "chat_concurrency", label: "同时对话上限" },
+    { key: "chat_queue_size", label: "排队队列长度上限" },
+    { key: "profile_update_interval", label: "画像总结触发轮数" },
+  ];
+
+  return (
+    <Modal title="全局设置" onClose={onClose}>
+      {loading ? (
+        <p className="py-8 text-center text-sm text-gray-400">加载中...</p>
+      ) : !settings ? (
+        <div className="rounded-lg bg-red-50 px-4 py-2.5 text-sm text-red-600">{error || "加载失败"}</div>
+      ) : (
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {numberFields.map((f) => (
+            <Field key={f.key} label={f.label}>
+              <input
+                type="number"
+                min={0}
+                value={settings[f.key] as number}
+                onChange={(e) => setNum(f.key, e.target.value)}
+                className="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                required
+              />
+            </Field>
+          ))}
+          <div>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={settings.memory_enabled_default}
+                onChange={(e) =>
+                  setSettings((prev) =>
+                    prev ? { ...prev, memory_enabled_default: e.target.checked } : prev
+                  )
+                }
+                className="rounded border-gray-300"
+              />
+              学生记忆功能总开关
+            </label>
+          </div>
+          {error && (
+            <div className="rounded-lg bg-red-50 px-4 py-2 text-sm text-red-600">{error}</div>
+          )}
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {saving ? "保存中..." : "保存"}
+            </button>
+          </div>
+        </form>
+      )}
+    </Modal>
   );
 }

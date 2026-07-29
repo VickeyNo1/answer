@@ -3,6 +3,7 @@
  * 用于 POST /api/chat 的流式响应处理
  */
 import { getToken } from "./auth";
+import type { KbRef } from "@/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -10,9 +11,14 @@ export interface SSECallbacks {
   onStart?: (conversationId: number) => void;
   onDelta?: (content: string) => void;
   onDone?: (messageId: number) => void;
-  onError?: (detail: string) => void;
+  /** status 仅在 HTTP 层错误时传入（如 429 配额用尽/队满），SSE error 事件不带 */
+  onError?: (detail: string, status?: number) => void;
   onKbSearch?: () => void;
   onKpIds?: (kpIds: string[]) => void;
+  // v4.0 新增事件
+  onQueue?: (position: number) => void;
+  onKbRefs?: (refs: KbRef[]) => void;
+  onSuggestions?: (items: string[]) => void;
 }
 
 /**
@@ -44,13 +50,14 @@ export async function sendChatMessage(
   });
 
   if (res.status === 401) {
-    callbacks.onError?.("登录已过期，请重新登录");
+    callbacks.onError?.("登录已过期，请重新登录", 401);
     return;
   }
 
   if (!res.ok) {
     const error = await res.json().catch(() => ({ detail: "请求失败" }));
-    callbacks.onError?.(error.detail || `请求失败 (${res.status})`);
+    // 429（配额用尽/排队已满）等错误携带状态码上抛，便于调用方区分展示
+    callbacks.onError?.(error.detail || `请求失败 (${res.status})`, res.status);
     return;
   }
 
@@ -95,6 +102,15 @@ export async function sendChatMessage(
             break;
           case "kp_ids":
             callbacks.onKpIds?.(data.kp_ids);
+            break;
+          case "queue":
+            callbacks.onQueue?.(data.position);
+            break;
+          case "kb_refs":
+            callbacks.onKbRefs?.(data.refs);
+            break;
+          case "suggestions":
+            callbacks.onSuggestions?.(data.items);
             break;
         }
       } catch {

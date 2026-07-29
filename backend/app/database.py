@@ -52,6 +52,8 @@ TABLES_SQL = [
         password_hash VARCHAR(255) NOT NULL COMMENT 'bcrypt 密码哈希',
         name VARCHAR(64) NOT NULL COMMENT '姓名',
         role VARCHAR(16) NOT NULL DEFAULT 'student' COMMENT '角色：student=学生 / admin=管理员',
+        daily_question_limit INT NULL COMMENT '单人每日提问上限；NULL=跟随全局默认（app_settings）',
+        memory_enabled TINYINT NULL COMMENT '单人记忆开关：1=开 / 0=关；NULL=跟随全局默认',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户表（学生与管理员）'""",
     """CREATE TABLE IF NOT EXISTS conversations (
@@ -94,7 +96,48 @@ TABLES_SQL = [
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
         INDEX idx_usage_created (created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='大模型用量与费用日志表'""",
+    """CREATE TABLE IF NOT EXISTS feedbacks (
+        id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+        message_id INT NOT NULL UNIQUE COMMENT '被评价的 AI 消息 ID（messages.id，一条消息只能评一次）',
+        user_id INT NOT NULL COMMENT '评价人 ID（users.id）',
+        rating VARCHAR(8) NOT NULL COMMENT '评价：up=点赞 / down=点踩',
+        reason VARCHAR(500) NULL COMMENT '点踩理由（rating=down 时必填，后端校验）',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        INDEX idx_created (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='答案反馈表（消息级点赞/点踩）'""",
+    """CREATE TABLE IF NOT EXISTS kb_search_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+        user_id INT NOT NULL COMMENT '触发检索的用户 ID（users.id）',
+        conversation_id INT NULL COMMENT '所属会话 ID（conversations.id，可空）',
+        subject VARCHAR(32) NOT NULL COMMENT '科目枚举值（如 cpa_acc）',
+        collection VARCHAR(16) NOT NULL COMMENT '检索集合：textbook=教材 / questions=题库',
+        query VARCHAR(255) NOT NULL COMMENT '大模型生成的检索词',
+        result_count INT NOT NULL DEFAULT 0 COMMENT '命中条数',
+        kp_ids TEXT NULL COMMENT '命中知识点 ID，JSON 字符串格式（如 ["ACC-03-02-01"]，与 messages.knowledge_point_ids 一致）',
+        status VARCHAR(16) NOT NULL COMMENT '检索状态：ok / empty / timeout / http_error / code_error（code≠0）/ degraded（重试后仍失败降级）',
+        elapsed_ms INT NOT NULL DEFAULT 0 COMMENT '耗时毫秒',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+        INDEX idx_created (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='知识库检索日志表（检索可观测）'""",
+    """CREATE TABLE IF NOT EXISTS app_settings (
+        id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+        setting_key VARCHAR(64) NOT NULL UNIQUE COMMENT '设置键',
+        setting_value VARCHAR(255) NOT NULL COMMENT '设置值（统一存字符串，读取时转型）',
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='全局设置表（K-V 形式）'""",
 ]
+
+# 存量库幂等补列：列名 -> ALTER 语句（新库已在 CREATE TABLE 中，仅缺列时执行）
+USERS_EXTRA_COLUMNS = {
+    "daily_question_limit": (
+        "ALTER TABLE users ADD COLUMN daily_question_limit INT NULL "
+        "COMMENT '单人每日提问上限；NULL=跟随全局默认（app_settings）'"
+    ),
+    "memory_enabled": (
+        "ALTER TABLE users ADD COLUMN memory_enabled TINYINT NULL "
+        "COMMENT '单人记忆开关：1=开 / 0=关；NULL=跟随全局默认'"
+    ),
+}
 
 
 def init_db() -> None:
@@ -119,6 +162,17 @@ def init_db() -> None:
         with conn.cursor() as cursor:
             for sql in TABLES_SQL:
                 cursor.execute(sql)
+
+            # 3. 存量库幂等补列（新库建表已含，仅检测缺列时 ALTER）
+            cursor.execute(
+                "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'users'",
+                (settings.MYSQL_DB,),
+            )
+            existing = {row["COLUMN_NAME"] for row in cursor.fetchall()}
+            for column, alter_sql in USERS_EXTRA_COLUMNS.items():
+                if column not in existing:
+                    cursor.execute(alter_sql)
         conn.commit()
     finally:
         conn.close()

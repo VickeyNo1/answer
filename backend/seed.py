@@ -1,4 +1,4 @@
-"""初始化脚本：默认管理员账号 + 默认大模型配置（MySQL）"""
+"""初始化脚本：默认管理员账号 + 默认大模型配置 + 全局设置初始键值（MySQL）"""
 import sys
 import os
 
@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import bcrypt
 from app.database import init_db, get_db_ctx
+from app.settings_store import SETTING_DEFAULTS
 
 ADMIN_STUDENT_ID = "admin"
 ADMIN_PASSWORD = "admin123"
@@ -65,6 +66,26 @@ def _seed_models(db) -> None:
         print("大模型配置已存在，跳过")
 
 
+def _seed_settings(db) -> None:
+    """幂等写入 app_settings 初始键值（已存在的键不覆盖）"""
+    created = 0
+    for key, value in SETTING_DEFAULTS.items():
+        cursor = db.execute(
+            "SELECT id FROM app_settings WHERE setting_key = %s", (key,)
+        )
+        if cursor.fetchone() is not None:
+            continue
+        db.execute(
+            "INSERT INTO app_settings (setting_key, setting_value) VALUES (%s, %s)",
+            (key, str(value)),
+        )
+        created += 1
+    if created:
+        print(f"全局设置初始键值写入 {created} 条")
+    else:
+        print("全局设置已存在，跳过")
+
+
 def seed():
     """初始化数据库并写入默认数据"""
     # 先建库建表
@@ -73,6 +94,7 @@ def seed():
     with get_db_ctx() as db:
         _seed_admin(db)
         _seed_models(db)
+        _seed_settings(db)
         db.commit()
 
 

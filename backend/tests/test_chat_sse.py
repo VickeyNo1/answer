@@ -153,7 +153,8 @@ class TestChatToolCall:
                                    usage={"input_tokens": 50, "output_tokens": 12})
             return gen2()
 
-        def fake_search(query, subject, collection="textbook", top_k=5):
+        def fake_search(query, subject, collection="textbook", top_k=5,
+                        user_id=0, conversation_id=None):
             assert subject == "cpa_acc"  # subject 由后端注入
             return {
                 "code": 0,

@@ -24,6 +24,18 @@ SYSTEM_PROMPT = """你是一个专业的会计答疑助手，面向会计专业�
 5. 如果不确定或资料不足，请诚实说明
 6. 适当举例帮助理解"""
 
+# 追问建议指令（仅追加到二轮回答的 system prompt 末尾，见设计文档 §3.3）
+SUGGESTIONS_DELIMITER = "===SUGGESTIONS==="
+SUGGESTIONS_INSTRUCTION = (
+    "\n\n回答完成后，另起一行输出固定分隔行 " + SUGGESTIONS_DELIMITER
+    + " ，然后在下一行输出一个 JSON 数组，包含 3 条学生可能想继续追问的问题"
+    "（每条不超过 20 字），分隔行之后除 JSON 数组外不要输出任何内容。"
+)
+
+# 降级话术分档（附在答案尾部，随正文落库）
+DEGRADED_SUFFIX = "\n\n> ⚠️ 知识库暂时不可用，本回答未经教材核对。"
+EMPTY_SUFFIX = "\n\n> 知识库中未检索到直接相关内容。"
+
 
 def build_messages(user_message: str, history: list[dict]) -> list[dict]:
     """构建发送给大模型的 messages 列表"""
@@ -39,15 +51,24 @@ def build_messages(user_message: str, history: list[dict]) -> list[dict]:
     return messages
 
 
-def stream_chat(messages: list[dict], model_name: str | None, subject: str):
+def stream_chat(
+    messages: list[dict],
+    model_name: str | None,
+    subject: str,
+    user_id: int = 0,
+    conversation_id: int | None = None,
+):
     """
     Function Calling 两轮流式调用，逐块 yield 事件：
     - 正常内容: {"content": "..."}
     - 开始检索知识库: {"kb_search": True}
+    - 检索命中引用摘要: {"kb_refs": [...]}
     - 检索结果知识点编号: {"kp_ids": [...]}
+    - 追问建议: {"suggestions": [...]}（解析失败静默不发）
     - 结束时用量（两轮累加）: {"usage": {"prompt_tokens": int, "completion_tokens": int}}
     - 出错: {"error": "错误信息"}
     model_name 为空时回退到配置中的 CHAT_MODEL。
+    user_id/conversation_id 仅用于 kb_search_logs 落库。
     """
     settings = get_settings()
     dashscope.api_key = settings.DASHSCOPE_API_KEY
@@ -127,14 +148,43 @@ def stream_chat(messages: list[dict], model_name: str | None, subject: str):
             subject=subject,  # 后端注入，不由模型决定
             collection=args.get("collection") or "textbook",
             top_k=int(args.get("top_k") or 5),
+            user_id=user_id,
+            conversation_id=conversation_id,
         )
         tool_result = format_results(kb_data)
         kp_ids = collect_kp_ids(kb_data)
         if kp_ids:
             yield {"kp_ids": kp_ids}
 
+        # 检索命中 → 下发引用卡片摘要（snippet 为 content 前 100 字符）
+        results = (kb_data or {}).get("results") or []
+        if results:
+            yield {"kb_refs": [
+                {
+                    "kp_id": (r.get("knowledge_point_ids") or [""])[0],
+                    "chapter": r.get("chapter", ""),
+                    "title": r.get("title", ""),
+                    "snippet": (r.get("content") or "")[:100],
+                }
+                for r in results
+            ]}
+
+        # 降级话术分档：检索服务不可用 / 检索成功但空结果
+        if kb_data is None:
+            kb_suffix = DEGRADED_SUFFIX
+        elif not results:
+            kb_suffix = EMPTY_SUFFIX
+        else:
+            kb_suffix = ""
+
         # ===== 第 2 轮：带工具结果流式生成最终答案（不再提供工具） =====
-        second_messages = messages + [
+        # 二轮 system prompt 末尾追加追问建议指令（不改动原 messages）
+        second_messages = [dict(messages[0])] + messages[1:] if messages else []
+        if second_messages and second_messages[0].get("role") == "system":
+            second_messages[0]["content"] = (
+                second_messages[0]["content"] + SUGGESTIONS_INSTRUCTION
+            )
+        second_messages = second_messages + [
             {
                 "role": "assistant",
                 "content": "",
@@ -166,6 +216,13 @@ def stream_chat(messages: list[dict], model_name: str | None, subject: str):
         )
 
         round_usage = {"in": 0, "out": 0}
+        # 追问建议解析：缓冲尾部内容，检测分隔行后从正文剔除建议段
+        holdback = ""
+        collecting_suggestions = False
+        suggestions_text = ""
+        # 分隔行可能跨块到达，保留足够尾部再下发
+        keep_len = len(SUGGESTIONS_DELIMITER) + 2
+
         for response in responses:
             if response.status_code != 200:
                 yield {"error": f"AI 模型调用失败: {response.code} - {response.message}"}
@@ -177,8 +234,35 @@ def stream_chat(messages: list[dict], model_name: str | None, subject: str):
             if not choices:
                 continue
             delta = choices[0].get("message", {}).get("content", "")
-            if delta:
-                yield {"content": delta}
+            if not delta:
+                continue
+            if collecting_suggestions:
+                suggestions_text += delta
+                continue
+            holdback += delta
+            if SUGGESTIONS_DELIMITER in holdback:
+                before, after = holdback.split(SUGGESTIONS_DELIMITER, 1)
+                before = before.rstrip()
+                if before:
+                    yield {"content": before}
+                collecting_suggestions = True
+                suggestions_text = after
+                holdback = ""
+            elif len(holdback) > keep_len:
+                yield {"content": holdback[:-keep_len]}
+                holdback = holdback[-keep_len:]
+
+        # 刷库存尾部正文 + 附降级话术
+        if not collecting_suggestions and holdback:
+            yield {"content": holdback}
+        if kb_suffix:
+            yield {"content": kb_suffix}
+
+        # 解析追问建议（失败静默降级，不影响正文）
+        if collecting_suggestions:
+            items = _parse_suggestions(suggestions_text)
+            if items:
+                yield {"suggestions": items}
 
         # 第 2 轮用量计入总量
         usage_acc["prompt_tokens"] += round_usage["in"]
@@ -187,6 +271,21 @@ def stream_chat(messages: list[dict], model_name: str | None, subject: str):
 
     except Exception as e:
         yield {"error": f"AI 模型调用异常: {str(e)}"}
+
+
+def _parse_suggestions(text: str) -> list[str]:
+    """从分隔行后的文本中解析 JSON 数组（解析失败返回空列表）"""
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        return []
+    try:
+        items = json.loads(text[start:end + 1])
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(items, list):
+        return []
+    return [str(item) for item in items if str(item).strip()][:3]
 
 
 def _track_usage(response, round_usage: dict) -> None:

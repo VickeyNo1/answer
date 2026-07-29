@@ -1,11 +1,14 @@
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, status
 from app.database import get_db
-from app.models import LoginRequest, TokenResponse, UserInfo
+from app.models import LoginRequest, PasswordUpdate, TokenResponse, UserInfo
 from app.auth.jwt_handler import create_access_token
 from app.auth.deps import get_current_user
 
 router = APIRouter(prefix="/api/auth", tags=["认证"])
+
+# /api/me/* 子路由（前缀与 /api/auth 不同，单独注册，见 app/main.py）
+me_router = APIRouter(prefix="/api/me", tags=["认证"])
 
 
 def _hash_password(password: str) -> str:
@@ -50,3 +53,29 @@ async def get_me(current_user: dict = Depends(get_current_user)):
         role=current_user["role"],
         created_at=str(current_user["created_at"]),
     )
+
+
+@me_router.put("/password")
+async def change_password(
+    req: PasswordUpdate,
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """学生自助修改密码（旧密码校验失败/新密码过短 → 400）"""
+    if not _verify_password(req.old_password, current_user["password_hash"]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="旧密码错误",
+        )
+    if len(req.new_password) < 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="新密码长度不能少于 6 位",
+        )
+
+    db.execute(
+        "UPDATE users SET password_hash = %s WHERE id = %s",
+        (_hash_password(req.new_password), current_user["id"]),
+    )
+    db.commit()
+    return {"message": "ok"}
