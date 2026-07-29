@@ -156,7 +156,7 @@ npx tsc --noEmit       # 类型检查
 
 ## 7. 数据库表结构
 
-MySQL 8.4（机器A，InnoDB，utf8mb4），建表见 `app/database.py`（`init_db()` 启动时 `CREATE DATABASE IF NOT EXISTS` + 建 5 张表）。**无 `subjects` 表**（科目改为知识库侧枚举，见 §6）。
+MySQL 8.4（机器A，InnoDB，utf8mb4），建表见 `app/database.py`（`init_db()` 启动时 `CREATE DATABASE IF NOT EXISTS` + 建 5 张表，建表 SQL 含表/字段中文注释）。存量库补注释用 `backend/scripts/add_table_comments.py`（幂等，改注释时与 `TABLES_SQL` 两处同改）。**无 `subjects` 表**（科目改为知识库侧枚举，见 §6）。
 
 | 表 | 关键列 | 说明 |
 |----|--------|------|
