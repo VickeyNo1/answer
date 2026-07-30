@@ -351,3 +351,79 @@ class AdminScoreUpdateResponse(BaseModel):
     score: float
     llm_reason: str | None = None
     obtained_score: float
+
+
+# ========== v4.0 M3：学生记忆 ==========
+
+class WrongQuestionListItem(BaseModel):
+    id: int
+    question_type: str | None = None
+    stem: str | None = None
+    options: dict | None = None
+    materials: str | None = None
+    sub_questions: list[str] | None = None
+    wrong_count: int
+    mastered: int
+    last_wrong_at: str
+    knowledge_point_ids: list[str] = []
+    subject: str
+
+
+class PaginatedWrongQuestions(BaseModel):
+    total: int
+    items: list[WrongQuestionListItem]
+
+
+class WrongQuestionRetryRequest(BaseModel):
+    answer: str
+
+
+class WrongQuestionRetryResponse(BaseModel):
+    correct: bool
+    correct_answer: str | None = None
+    explanation: str | None = None
+    mastered: int
+
+
+class WeakKpItem(BaseModel):
+    kp_id: str
+    rate: float
+    wrong_count: int
+
+
+class RecentExamSummary(BaseModel):
+    subject: str
+    score: int
+    total: int
+    date: str | None = None
+
+
+class ProfileOut(BaseModel):
+    style_profile: str | None = None
+    weak_kps: list[WeakKpItem] = []
+    recent_exam: RecentExamSummary | None = None
+    memory_enabled: bool
+
+
+class HotWrongKpItem(BaseModel):
+    kp_id: str
+    wrong_count: int
+
+
+class WrongStatsOut(BaseModel):
+    total: int
+    unmastered: int
+    hot_wrong_kps: list[HotWrongKpItem] = []
+
+
+class AdminStudentProfile(BaseModel):
+    style_profile: str | None = None
+    weak_kps: list[WeakKpItem] = []
+    recent_exam: RecentExamSummary | None = None
+    wrong_stats: WrongStatsOut
+
+
+class AdminWrongStatItem(BaseModel):
+    kp_id: str
+    wrong_count: int
+    student_count: int

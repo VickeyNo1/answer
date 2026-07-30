@@ -7,6 +7,7 @@ MySQL 不可达时整体 skip，不影响本地无数据库环境。
 """
 import os
 import sys
+import json
 
 # ---- 设置测试环境变量（必须在导入 app 之前）----
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -249,3 +250,58 @@ def fake_llm(monkeypatch):
         return prompts
 
     return _apply
+
+
+# ========== 学生记忆相关（v4.0 M3） ==========
+
+
+def make_wrong_question(user_id: int, question_id: str = "Q-001",
+                        question_type: str = "单选", answer: str = "B",
+                        my_answer: str = "C", kp_ids: list[str] | None = None,
+                        subject: str = "cpa_acc", mastered: int = 0,
+                        wrong_count: int = 1, source_exam_id: int | None = None,
+                        **extra) -> int:
+    """直接在 wrong_questions 表造一条错题，返回 id"""
+    snap = make_question(question_id, question_type=question_type, answer=answer,
+                         kp_ids=kp_ids, **extra)
+    with get_db_ctx() as db:
+        cursor = db.execute(
+            """INSERT INTO wrong_questions
+               (user_id, subject, question_id, question_snapshot, my_answer,
+                wrong_count, mastered, source_exam_id)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (user_id, subject, question_id[:32],
+             json.dumps(snap, ensure_ascii=False), my_answer,
+             wrong_count, mastered, source_exam_id),
+        )
+        db.commit()
+        return cursor.lastrowid
+
+
+@pytest.fixture
+def clean_profile():
+    """学生记忆测试隔离：用例前后清空错题本、画像、反馈、对话"""
+    def _clear():
+        with get_db_ctx() as db:
+            db.execute("DELETE FROM wrong_questions")
+            db.execute("DELETE FROM student_profiles")
+            db.execute("DELETE FROM feedbacks")
+            db.execute("DELETE FROM messages")
+            db.execute("DELETE FROM conversations")
+            db.commit()
+
+    _clear()
+    yield
+    _clear()
+
+
+@pytest.fixture(autouse=True)
+def bg_profile_calls(monkeypatch):
+    """拦截后台画像总结任务，避免测试真调 dashscope
+
+    返回被提交画像总结的 user_id 列表供断言；需要验证画像流程的用例
+    在 mock 掉 summarizer._call_llm 后同步调 summarizer.summarize_profile(user_id)。
+    """
+    calls: list[int] = []
+    monkeypatch.setattr("app.profile.summarizer.submit_profile_summary", calls.append)
+    return calls

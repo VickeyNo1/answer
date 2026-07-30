@@ -153,6 +153,28 @@ TABLES_SQL = [
         disputed TINYINT NOT NULL DEFAULT 0 COMMENT '学生异议标记：1=有异议',
         UNIQUE KEY uk_exam_seq (exam_id, seq)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='考试作答明细表（开卷时预置行）'""",
+    """CREATE TABLE IF NOT EXISTS student_profiles (
+        user_id INT PRIMARY KEY COMMENT '学生 ID（users.id，一人一行）',
+        style_profile VARCHAR(500) NULL COMMENT '学习风格画像（LLM 生成，硬限 200 字符）',
+        dialog_count_since_update INT NOT NULL DEFAULT 0 COMMENT '距上次画像更新累计对话轮数',
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='学生学习风格画像表'""",
+    """CREATE TABLE IF NOT EXISTS wrong_questions (
+        id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+        user_id INT NOT NULL COMMENT '归属学生（users.id）',
+        subject VARCHAR(32) NOT NULL COMMENT '科目枚举值',
+        question_id VARCHAR(32) NOT NULL COMMENT '知识库题目 ID',
+        question_snapshot TEXT NOT NULL COMMENT '题目快照 JSON（同 exam_answers，含答案解析防改题）',
+        my_answer TEXT NULL COMMENT '最近一次错误作答',
+        wrong_count INT NOT NULL DEFAULT 1 COMMENT '累计错误次数（重复错同题 +1）',
+        mastered TINYINT NOT NULL DEFAULT 0 COMMENT '重练答对标记：1=已掌握（再错重置 0）',
+        last_wrong_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '最近错误时间',
+        source_exam_id INT NULL COMMENT '来源考试 ID（重练答对不清除）',
+        last_mastered_at DATETIME NULL COMMENT '最近一次答对时间',
+        UNIQUE KEY uk_user_question (user_id, question_id),
+        INDEX idx_user_mastered (user_id, mastered),
+        INDEX idx_created (last_wrong_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='错题本表'""",
 ]
 
 # 存量库幂等补列：表名 -> {列名: ALTER 语句}（新库已在 CREATE TABLE 中，仅缺列时执行）
