@@ -149,3 +149,68 @@ def admin_headers(admin_token):
 def student_headers(student_token):
     """学生请求头"""
     return {"Authorization": f"Bearer {student_token}"}
+
+
+# ========== 考试相关（v4.0 M2） ==========
+
+def make_question(question_id: str, question_type: str = "单选",
+                  answer: str | None = "B", kp_ids: list[str] | None = None,
+                  **extra) -> dict:
+    """构造知识库抽题返回的题目（结构见 doc/知识库对接文档.md §1.4）"""
+    question = {
+        "question_id": question_id,
+        "question_type": question_type,
+        "chapter_id": "ACC-01",
+        "chapter": "第一章 总论",
+        "knowledge_point_ids": ["ACC-01-03-01"] if kp_ids is None else kp_ids,
+        "stem": f"题干 {question_id}",
+        "options": {"A": "甲", "B": "乙", "C": "丙", "D": "丁"},
+        "answer": answer,
+        "explanation": f"解析 {question_id}",
+        "materials": None,
+        "sub_questions": None,
+    }
+    if question_type in ("计算", "综合"):
+        question["stem"] = None
+        question["options"] = None
+        question["materials"] = f"资料 {question_id}"
+        question["sub_questions"] = ["要求1", "要求2"]
+    question.update(extra)
+    return question
+
+
+@pytest.fixture
+def fake_draw(monkeypatch):
+    """mock 知识库抽题：fake_draw(questions) 后创卷返回这些题，返回调用参数记录列表
+
+    也可传异常实例/类，创卷时抛出（覆盖 KbDrawError 降级路径）。
+    """
+    def _apply(questions):
+        calls: list[dict] = []
+
+        def _draw(subject, chapter_ids, counts):
+            calls.append({"subject": subject, "chapter_ids": chapter_ids, "counts": counts})
+            if isinstance(questions, BaseException) or (
+                isinstance(questions, type) and issubclass(questions, BaseException)
+            ):
+                raise questions
+            return questions
+
+        monkeypatch.setattr("app.kb.client.draw_exam", _draw)
+        return calls
+
+    return _apply
+
+
+@pytest.fixture
+def clean_exams():
+    """考试测试隔离：用例前后清空考试数据（「每人仅 1 张 ongoing」会互相干扰）"""
+    def _clear():
+        with get_db_ctx() as db:
+            db.execute("DELETE FROM exam_answers")
+            db.execute("DELETE FROM exams")
+            db.commit()
+
+    _clear()
+    yield
+    _clear()

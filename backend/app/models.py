@@ -211,3 +211,109 @@ class StatsResponse(BaseModel):
     total_students: int
     total_conversations: int
     today_active_users: int
+
+
+# ========== 考试相关（v4.0 M2） ==========
+
+class ExamCreateRequest(BaseModel):
+    """POST /api/exams 请求（chapter_ids 为 null/空 = 全科目范围）"""
+    subject: str | None = None
+    chapter_ids: list[str] | None = None
+    counts: dict[str, int]
+
+
+class ExamQuestionOut(BaseModel):
+    """答题用题目（**不含参考答案与解析**，快照仅落库）"""
+    seq: int
+    question_type: str
+    stem: str | None = None
+    options: dict | None = None
+    materials: str | None = None
+    sub_questions: list | None = None
+    full_score: float
+
+
+class ExamCreateResponse(BaseModel):
+    id: int
+    status: str
+    question_count: int
+    total_score: float
+    questions: list[ExamQuestionOut]
+
+
+class ExamAnswerSaveItem(BaseModel):
+    seq: int
+    content: str | None = None
+
+
+class ExamAnswersSaveRequest(BaseModel):
+    """PUT /api/exams/{id}/answers 请求（可多次调用覆盖暂存）"""
+    answers: list[ExamAnswerSaveItem]
+
+
+class ExamSubmitResponse(BaseModel):
+    id: int
+    status: str  # 有主观题=grading / 纯客观题=graded
+    objective_score: float
+    pending_subjective: int
+
+
+class ExamListItem(BaseModel):
+    """GET /api/exams 列表项"""
+    id: int
+    subject: str
+    status: str
+    question_count: int
+    total_score: float
+    obtained_score: float | None = None
+    created_at: str
+    submitted_at: str | None = None
+
+
+class ExamAnswerDetail(BaseModel):
+    """成绩单单题明细（graded 前不含 correct_answer/explanation/score/llm_reason）"""
+    seq: int
+    question_type: str
+    stem: str | None = None
+    options: dict | None = None
+    materials: str | None = None
+    sub_questions: list | None = None
+    my_answer: str | None = None
+    correct_answer: str | None = None
+    explanation: str | None = None
+    score: float | None = None
+    full_score: float
+    llm_reason: str | None = None
+    disputed: int = 0
+    knowledge_point_ids: list[str] = []
+
+
+class MasteryKpItem(BaseModel):
+    kp_id: str
+    rate: float
+
+
+class MasteryChapterItem(BaseModel):
+    chapter_id: str
+    rate: float
+
+
+class MasteryOut(BaseModel):
+    """掌握度归因（算式见设计 §4.5），仅 graded 后返回"""
+    by_kp: list[MasteryKpItem] = []
+    by_chapter: list[MasteryChapterItem] = []
+    weak_kps: list[MasteryKpItem] = []
+
+
+class ExamDetailResponse(BaseModel):
+    """GET /api/exams/{id} 成绩单详情"""
+    id: int
+    subject: str
+    status: str
+    question_count: int
+    total_score: float
+    obtained_score: float | None = None
+    created_at: str
+    submitted_at: str | None = None
+    answers: list[ExamAnswerDetail] = []
+    mastery: MasteryOut | None = None
