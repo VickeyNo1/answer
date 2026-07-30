@@ -37,9 +37,16 @@ DEGRADED_SUFFIX = "\n\n> ⚠️ 知识库暂时不可用，本回答未经教材
 EMPTY_SUFFIX = "\n\n> 知识库中未检索到直接相关内容。"
 
 
-def build_messages(user_message: str, history: list[dict]) -> list[dict]:
-    """构建发送给大模型的 messages 列表"""
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+def build_messages(user_message: str, history: list[dict],
+                   memory_block: str | None = None) -> list[dict]:
+    """构建发送给大模型的 messages 列表
+
+    memory_block 非空时追加到 system prompt 末尾（M3 学生记忆注入）。
+    """
+    system_content = SYSTEM_PROMPT
+    if memory_block:
+        system_content = system_content + "\n\n" + memory_block
+    messages = [{"role": "system", "content": system_content}]
 
     # 历史消息
     for msg in history:

@@ -99,13 +99,21 @@ async def chat(
             )
             db.commit()
 
-        # 6. 构建消息列表
+        # 6. 构建消息列表（M3：注入记忆块）
         history = get_conversation_history(conversation_id, limit=10)
         # 排除刚存入的当前用户消息（因为还没得到回复）
         if history and history[-1]["role"] == "user" and history[-1]["content"] == req.message:
             history = history[:-1]
 
-        messages = build_messages(req.message, history)
+        memory_block = None
+        try:
+            from app.profile import store as profile_store
+            with get_db_ctx() as mem_db:
+                memory_block = profile_store.build_memory_block(mem_db, user_id, current_user)
+        except Exception:
+            pass
+
+        messages = build_messages(req.message, history, memory_block)
         model_name = llm_store.get_active_model()
     except BaseException:
         # 预处理阶段失败：归还已持有的并发资源
@@ -188,6 +196,19 @@ async def chat(
                     )
                     db.commit()
                     message_id = cursor.lastrowid
+
+                    # M3：记忆计数 +1，达到阈值触发画像总结
+                    try:
+                        from app.profile import store as profile_store
+                        from app.profile.summarizer import submit_profile_summary
+                        count = profile_store.increment_dialog_count(db, user_id)
+                        threshold = settings_store.get_int("profile_update_interval")
+                        if count >= threshold:
+                            profile_store.reset_dialog_count(db, user_id)
+                            submit_profile_summary(user_id)
+                    except Exception:
+                        pass
+
                 yield _sse({"type": "done", "message_id": message_id})
             elif not error_occurred:
                 yield _sse({"type": "done", "message_id": 0})

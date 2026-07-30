@@ -231,6 +231,22 @@ def submit_exam(db, exam_id: int) -> tuple[float, int]:
             (objective_score, exam_id),
         )
     db.commit()
+
+    # M3：纯客观题交卷即 graded，错题自动入本（有主观题时由 grade_exam 入本）
+    if not pending:
+        from app.profile.store import upsert_wrong_question
+        exam = get_exam(db, exam_id)
+        if exam:
+            for row in get_answers(db, exam_id):
+                full = float(row["full_score"])
+                score = row["score"]
+                if score is None or float(score) < full:
+                    upsert_wrong_question(
+                        db, exam["user_id"], exam["subject"],
+                        row["question_id"], row["question_snapshot"],
+                        row.get("student_answer"), exam_id,
+                    )
+
     return round(objective_score, 1), pending
 
 

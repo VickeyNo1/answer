@@ -182,6 +182,19 @@ def grade_exam(exam_id: int) -> None:
             (obtained, exam_id),
         )
         db.commit()
+
+        # M3：错题自动入本（仅 score < full_score 或 score=NULL 的题）
+        from app.profile.store import upsert_wrong_question
+        all_rows = store.get_answers(db, exam_id)
+        for row in all_rows:
+            full = float(row["full_score"])
+            score = row["score"]
+            if score is None or float(score) < full:
+                upsert_wrong_question(
+                    db, exam["user_id"], exam["subject"],
+                    row["question_id"], row["question_snapshot"],
+                    row.get("student_answer"), exam_id,
+                )
     logger.info("exam_graded id=%s 主观题=%d 总分=%.1f", exam_id, len(rows), obtained)
 
 
