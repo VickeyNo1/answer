@@ -214,3 +214,38 @@ def clean_exams():
     _clear()
     yield
     _clear()
+
+
+@pytest.fixture(autouse=True)
+def bg_grading_calls(monkeypatch):
+    """拦截交卷后的后台判卷任务，避免测试真调 dashscope
+
+    返回被提交判卷的 exam_id 列表供断言；需要验证判卷流程的用例
+    在 mock 掉 judger._call_llm 后同步调 judger.grade_exam(exam_id)。
+    """
+    calls: list[int] = []
+    monkeypatch.setattr("app.exam.judger.submit_grading", calls.append)
+    return calls
+
+
+@pytest.fixture
+def fake_llm(monkeypatch):
+    """mock 判卷大模型：fake_llm([...]) 按顺序返回每次调用的结果
+
+    每项可为 (文本, input_tokens, output_tokens) 或异常实例（抛出以覆盖重试路径）；
+    用尽后循环使用最后一项。返回收到的 prompt 列表。
+    """
+    def _apply(script):
+        prompts: list[str] = []
+
+        def _call(model, prompt):
+            prompts.append(prompt)
+            item = script[min(len(prompts) - 1, len(script) - 1)]
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+        monkeypatch.setattr("app.exam.judger._call_llm", _call)
+        return prompts
+
+    return _apply

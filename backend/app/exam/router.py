@@ -120,7 +120,7 @@ async def submit_exam(
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
 ):
-    """交卷：客观题即时判分；有主观题置 grading 等 LLM 判卷，否则直接 graded"""
+    """交卷：客观题即时判分；有主观题置 grading 并提交后台 LLM 判卷，否则直接 graded"""
     exam = _owned_exam(db, exam_id, current_user["id"])
     if exam["status"] != "ongoing":
         raise HTTPException(
@@ -130,8 +130,9 @@ async def submit_exam(
 
     objective_score, pending = store.submit_exam(db, exam_id)
     if pending:
-        # 主观题 LLM 异步判卷在 B3 批次接入；接入前试卷停留在 grading
-        logger.info("exam_submit exam_id=%s 待判主观题=%d（等待 B3 判卷引擎）",
+        # 主观题交给后台线程池判卷，本接口立即返回；学生端轮询详情等 graded
+        judger.submit_grading(exam_id)
+        logger.info("exam_submit exam_id=%s 待判主观题=%d 已提交后台判卷",
                     exam_id, pending)
     return ExamSubmitResponse(
         id=exam_id,
