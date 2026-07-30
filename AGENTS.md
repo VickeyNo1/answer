@@ -82,7 +82,7 @@ v4.0 M1 试点底座新增要点：
 
 | 路径 | 职责 | 关键点 |
 |------|------|--------|
-| `main.py` | FastAPI 应用入口，注册 6 个 router，CORS，`/api/health`（三字段） | 启动时 `init_db()` 建库建表 + 加载设置缓存 + 初始化并发闸门 |
+| `main.py` | FastAPI 应用入口，注册 8 个 router，CORS，`/api/health`（三字段） | 启动时 `init_db()` 建库建表 + 加载设置缓存 + 初始化并发闸门 |
 | `config.py` | `Settings`（pydantic-settings），读 `.env` | `MYSQL_*` / `KB_*` 配置；`get_settings()` 带 `lru_cache` |
 | `database.py` | MySQL 建库建表（PyMySQL + DictCursor） | `DB` 包装类保留 `db.execute()` 习惯；`get_db()`（Depends 生成器）vs `get_db_ctx()`（脚本上下文管理器）见 §6；存量库幂等补 users 新列 |
 | `models.py` | 全部 Pydantic 请求/响应模型 | 新增接口先在此定义 schema |
@@ -92,16 +92,18 @@ v4.0 M1 试点底座新增要点：
 | `kb/` | 知识库对接（v3.0） | `client.py`（`POST /kb/search`，超时/5001 重试1次后降级；v4.0 新增：每次检索写 `kb_search_logs`、`probe()` 供健康检查探测）、`prompt.py`（`SEARCH_TOOL` schema + 结果拼接 + `collect_kp_ids`）、`subjects.py`（科目注册表 + `GET /api/subjects`） |
 | `admin/` | 管理后台 | `router.py`（学生增删改查/批量、统计；v4.0 新增：全局设置 GET/PUT、单人权益、反馈明细、检索报表 kb/stats + kb/hot-kps）、`stats.py`（聚合统计）、`entitlements.py`（权益生效值：users 覆盖值 ?? 全局默认，v4.0） |
 | `llm/` | 大模型管理 | `router.py`（模型 CRUD/activate/usage）、`store.py`（模型与用量数据访问 + 费用计算） |
+| `exam/` | 考试系统（v4.0 M2） | `router.py`（学生端 6 接口 + 管理端 3 接口）、`store.py`（组卷/暂存/交卷/掌握度/管理端数据访问）、`judger.py`（客观判分 + 主观题 LLM 异步判卷 `ThreadPoolExecutor`） |
 
 ### 前端 `frontend/src/`
 
 | 路径 | 职责 |
 |------|------|
-| `app/page.tsx` | 学生对话主页（会话列表、流式对话、科目选择） |
+| `app/page.tsx` | 学生对话主页（会话列表、流式对话、科目选择；v4.0 M2 新增 `?ask=&subject=` 预填 + 「去考试」入口） |
+| `app/exam/page.tsx` | 考试页（v4.0 M2）：三步状态机——组卷→答题→成绩单（grading 5s 轮询、掌握度条、薄弱点「问 AI」、主观题异议） |
 | `app/login/page.tsx` | 登录页 |
-| `app/admin/page.tsx` | 管理后台，Tab 容器（统计/学生/大模型） |
-| `components/` | `AuthGuard`、`ChatInput`、`ChatWindow`（含「正在检索知识库…」提示）、`ConversationList` |
-| `components/admin/` | `StatsTab`、`StudentTab`、`ModelTab` |
+| `app/admin/page.tsx` | 管理后台，Tab 容器（统计/学生/大模型/考试/运营报表） |
+| `components/` | `AuthGuard`、`ChatInput`（含 `initialValue` 预填）、`ChatWindow`（含「正在检索知识库…」提示）、`ConversationList` |
+| `components/admin/` | `StatsTab`、`StudentTab`、`ModelTab`、`ExamTab`（筛选列表→行展开详情→行内改分） |
 | `lib/api.ts` | fetch 封装：`apiGet/apiPost/apiPut/apiDelete/apiUpload` |
 | `lib/auth.ts` | token 本地存储与读取 |
 | `lib/sse.ts` | SSE 对话客户端 `sendChatMessage(conversationId, message, subject, callbacks)`（处理 `kb_search`/`kp_ids`/`queue`/`kb_refs`/`suggestions` 事件） |
@@ -164,7 +166,7 @@ npx tsc --noEmit       # 类型检查
 
 ## 7. 数据库表结构
 
-MySQL 8.4（机器A，InnoDB，utf8mb4），建表见 `app/database.py`（`init_db()` 启动时 `CREATE DATABASE IF NOT EXISTS` + 建 8 张表，建表 SQL 含表/字段中文注释；存量库幂等补 users 新列）。存量库补注释用 `backend/scripts/add_table_comments.py`（幂等，改注释时与 `TABLES_SQL` 两处同改）。**无 `subjects` 表**（科目改为知识库侧枚举，见 §6）。
+MySQL 8.4（机器A，InnoDB，utf8mb4），建表见 `app/database.py`（`init_db()` 启动时 `CREATE DATABASE IF NOT EXISTS` + 建 10 张表，建表 SQL 含表/字段中文注释；存量库幂等补 users 新列 + usage_logs.task_type 列）。存量库补注释用 `backend/scripts/add_table_comments.py`（幂等，改注释时与 `TABLES_SQL` 两处同改）。**无 `subjects` 表**（科目改为知识库侧枚举，见 §6）。
 
 | 表 | 关键列 | 说明 |
 |----|--------|------|
@@ -172,16 +174,18 @@ MySQL 8.4（机器A，InnoDB，utf8mb4），建表见 `app/database.py`（`init_
 | `conversations` | `id, user_id, title, subject(VARCHAR(32),可空), created_at` | 会话，`subject` 存科目枚举值（如 `cpa_acc`） |
 | `messages` | `id, conversation_id, role, content, knowledge_point_ids(TEXT,可空), created_at` | 消息，`knowledge_point_ids` 存 KB 命中知识点编号 JSON 数组 |
 | `model_configs` | `id, provider('ali'/'deepseek'), model_name(UNIQUE), display_name, price_in, price_out, enabled, is_active, created_at` | 模型配置，`is_active=1` 为当前模型 |
-| `usage_logs` | `id, model_name, user_id, conversation_id, prompt_tokens, completion_tokens, total_tokens, cost, created_at` | 用量与费用 |
+| `usage_logs` | `id, model_name, user_id, conversation_id, prompt_tokens, completion_tokens, total_tokens, cost, task_type(VARCHAR(16) DEFAULT 'chat'), created_at` | 用量与费用；v4.0 M2 新增 `task_type` 区分 `chat`/`exam` |
 | `feedbacks` ✦ | `id, message_id(UNIQUE), user_id, rating('up'/'down'), reason(VARCHAR(500),可空), created_at` | 答案反馈（消息级点赞/点踩）；`message_id` 唯一，重复提交 UPSERT 覆盖 |
 | `kb_search_logs` ✦ | `id, user_id, conversation_id(可空), subject, collection, query, result_count, kp_ids(TEXT,可空), status, elapsed_ms, created_at` | 知识库检索日志（可观测）；`status` 六态：ok/empty/timeout/http_error/code_error/degraded |
 | `app_settings` ✦ | `id, setting_key(UNIQUE), setting_value(VARCHAR(255)), updated_at` | 全局设置（K-V）；值统一存字符串，读时按键转型（`app/settings_store.py`） |
+| `exams` ✦✦ | `id, user_id, subject, chapter_ids(JSON,可空), status('ongoing'/'grading'/'graded'), question_count, total_score, obtained_score(DECIMAL,可空), created_at, submitted_at(可空)` | 试卷（v4.0 M2）；`idx_user_status` 索引支撑「每人仅 1 张 ongoing」 |
+| `exam_answers` ✦✦ | `id, exam_id, seq, question_id, question_type, question_snapshot(TEXT), full_score, student_answer(TEXT,可空), score(DECIMAL,可空), llm_reason(TEXT,可空), disputed(TINYINT DEFAULT 0), created_at` | 试卷答题（v4.0 M2）；`uk_exam_seq(exam_id,seq)` 唯一；`question_snapshot` 存题目全量 JSON（含答案解析） |
 
-> 标 ✦ 的为 v4.0 M1 新增。不迁移旧 SQLite 数据；MySQL 为全新库，首次 `seed.py` 写入管理员 + 默认模型 + 默认全局设置。
+> 标 ✦ 的为 v4.0 M1 新增；✦✦ 为 v4.0 M2 新增。不迁移旧 SQLite 数据；MySQL 为全新库，首次 `seed.py` 写入管理员 + 默认模型 + 默认全局设置。
 
 ---
 
-## 8. 接口一览（28 个业务接口）
+## 8. 接口一览（37 个业务接口）
 
 Base URL：`http://localhost:8000`。权限：🟢 全员登录 ｜ 🔒 管理员。
 **接口明细（请求/响应/示例）是 `doc/接口文档.md` 的单一职责,本节仅作分组索引。**
@@ -193,6 +197,7 @@ Base URL：`http://localhost:8000`。权限：🟢 全员登录 ｜ 🔒 管理�
 | 管理员 | `app/admin/` | 12 | 🔒 | 学生增删改查、批量导入、使用统计；v4.0 新增：全局设置 GET/PUT、单人权益 `PUT /students/{id}/entitlements`、反馈明细 `GET /feedbacks`、检索报表 `GET /kb/stats` + `GET /kb/hot-kps` |
 | 大模型管理 | `app/llm/` | 6 | 🔒 | 模型 CRUD、`activate` 切换、`usage` 用量费用 |
 | 科目 | `app/kb/subjects.py` | 1 | 🟢 | `GET /api/subjects` 返回已上线科目枚举 |
+| 考试 | `app/exam/` | 9 | 🟢 / 🔒 | v4.0 M2 新增：学生端 6 个（创建/暂存/交卷/列表/详情/异议）+ 管理端 3 个（列表筛选/详情/复核改分） |
 
 > 反馈提交（`POST /api/feedback`）属对话模块（代码在 `chat/router.py`）；反馈明细/全局设置/权益/检索报表属管理员模块（代码在 `admin/router.py`）。
 > 另有运维接口 `GET /api/health`（健康检查，无需认证；v4.0 升级为三字段 `status/mysql/kb`，任一依赖 fail 时 `status=degraded` 但 HTTP 仍 200，KB 探测见 `app/kb/client.py::probe`）。全部接口的路径与字段明细见 `doc/接口文档.md`。
