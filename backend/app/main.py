@@ -9,7 +9,7 @@ from app.auth.router import router as auth_router, me_router
 from app.chat.router import router as chat_router
 from app.chat import concurrency
 from app.admin.router import router as admin_router
-from app.exam.router import router as exam_router
+from app.exam.router import router as exam_router, admin_router as exam_admin_router
 from app.llm.router import router as llm_router
 from app.kb import client as kb_client
 from app.kb.subjects import router as subjects_router
@@ -48,6 +48,7 @@ app.include_router(chat_router)
 app.include_router(admin_router)
 app.include_router(llm_router)
 app.include_router(exam_router)
+app.include_router(exam_admin_router)
 app.include_router(subjects_router)
 
 

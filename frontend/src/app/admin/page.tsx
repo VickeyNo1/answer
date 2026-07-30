@@ -7,13 +7,15 @@ import { StatsTab } from "@/components/admin/StatsTab";
 import { StudentTab } from "@/components/admin/StudentTab";
 import { ModelTab } from "@/components/admin/ModelTab";
 import { OperationsTab } from "@/components/admin/OperationsTab";
+import { ExamTab } from "@/components/admin/ExamTab";
 
-type TabKey = "stats" | "students" | "models" | "operations";
+type TabKey = "stats" | "students" | "models" | "operations" | "exams";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "stats", label: "统计概览" },
   { key: "students", label: "学生管理" },
   { key: "models", label: "大模型" },
+  { key: "exams", label: "考试" },
   { key: "operations", label: "运营报表" },
 ];
 
@@ -86,6 +88,7 @@ export default function AdminPage() {
         {activeTab === "stats" && <StatsTab />}
         {activeTab === "students" && <StudentTab />}
         {activeTab === "models" && <ModelTab />}
+        {activeTab === "exams" && <ExamTab />}
         {activeTab === "operations" && <OperationsTab />}
       </main>
     </div>

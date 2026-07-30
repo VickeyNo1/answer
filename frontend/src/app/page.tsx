@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, useCallback, useRef, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { apiGet, apiDelete } from "@/lib/api";
 import { getRole, clearAuth } from "@/lib/auth";
 import { sendChatMessage } from "@/lib/sse";
@@ -12,7 +12,18 @@ import { ChatInput } from "@/components/ChatInput";
 import { ChangePasswordModal } from "@/components/ChangePasswordModal";
 
 export default function HomePage() {
+  return (
+    <Suspense fallback={null}>
+      <HomeContent />
+    </Suspense>
+  );
+}
+
+function HomeContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const prefillAsk = searchParams.get("ask") || "";
+  const prefillSubject = searchParams.get("subject") || "";
 
   // 用户信息
   const [user, setUser] = useState<UserInfo | null>(null);
@@ -62,11 +73,15 @@ export default function HomePage() {
     apiGet<Subject[]>("/api/subjects")
       .then((data) => {
         setSubjects(data);
-        // 默认选中首个已上线科目
-        if (data.length > 0) setSelectedSubject(data[0].subject);
+        // 默认选中首个已上线科目；URL ?subject= 优先预填
+        if (prefillSubject && data.some((s) => s.subject === prefillSubject)) {
+          setSelectedSubject(prefillSubject);
+        } else if (data.length > 0) {
+          setSelectedSubject(data[0].subject);
+        }
       })
       .catch(() => {});
-  }, []);
+  }, [prefillSubject]);
 
   // 初始化：加载对话列表
   const loadConversations = useCallback(async () => {
@@ -333,6 +348,12 @@ export default function HomePage() {
               管理后台
             </a>
           )}
+          <a
+            href="/exam"
+            className="rounded-lg bg-blue-50 px-3 py-1 text-sm text-blue-600 transition-colors hover:bg-blue-100"
+          >
+            去考试
+          </a>
         </div>
       </header>
 
@@ -408,7 +429,7 @@ export default function HomePage() {
                 suggestions={suggestions}
                 onSuggestionClick={handleSendMessage}
               />
-              <ChatInput onSend={handleSendMessage} disabled={streaming} />
+              <ChatInput onSend={handleSendMessage} disabled={streaming} initialValue={prefillAsk} />
             </>
           )}
         </div>

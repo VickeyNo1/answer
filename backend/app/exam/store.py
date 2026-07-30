@@ -290,9 +290,14 @@ def compute_mastery(answers: list[dict]) -> dict:
     return {"by_kp": by_kp, "by_chapter": by_chapter, "weak_kps": weak_kps}
 
 
-def build_detail(db, exam: dict) -> dict:
-    """组装成绩单详情：graded 后才展示参考答案/解析/得分/掌握度"""
-    reveal = exam["status"] == "graded"
+def build_detail(db, exam: dict, reveal: bool | None = None) -> dict:
+    """组装成绩单详情：graded 后才展示参考答案/解析/得分/掌握度
+
+    reveal=None 时按 status=='graded' 判定；管理端传 reveal=True 强制展示
+    （用于复核 grading 中的试卷，但 grading 时主观题 score 仍为 NULL）。
+    """
+    if reveal is None:
+        reveal = exam["status"] == "graded"
     rows = get_answers(db, exam["id"])
 
     answers = []
@@ -336,5 +341,93 @@ def build_detail(db, exam: dict) -> dict:
         "created_at": str(exam["created_at"]),
         "submitted_at": None if exam["submitted_at"] is None else str(exam["submitted_at"]),
         "answers": answers,
-        "mastery": compute_mastery(graded_items) if reveal else None,
+        # 掌握度仅在 graded 后展示：grading 中主观题 score=NULL 会严重低估
+        "mastery": compute_mastery(graded_items) if exam["status"] == "graded" else None,
     }
+
+
+# ========== 管理端 ==========
+
+def list_admin_exams(db, student_id: str | None = None, subject: str | None = None,
+                     date_from: str | None = None, date_to: str | None = None,
+                     page: int = 1, page_size: int = 20) -> dict:
+    """管理端考试列表（含学生信息，按 id 倒序分页）"""
+    where = "WHERE 1=1"
+    params: list = []
+    if student_id:
+        where += " AND u.student_id = %s"
+        params.append(student_id)
+    if subject:
+        where += " AND e.subject = %s"
+        params.append(subject)
+    if date_from:
+        where += " AND DATE(e.created_at) >= %s"
+        params.append(date_from)
+    if date_to:
+        where += " AND DATE(e.created_at) <= %s"
+        params.append(date_to)
+
+    cursor = db.execute(
+        f"SELECT COUNT(*) AS cnt FROM exams e JOIN users u ON e.user_id = u.id {where}",
+        params,
+    )
+    total = int(cursor.fetchone()["cnt"])
+
+    offset = (page - 1) * page_size
+    cursor = db.execute(
+        f"""SELECT e.id, u.student_id, u.name AS student_name, e.subject, e.status,
+                   e.question_count, e.total_score, e.obtained_score,
+                   e.created_at, e.submitted_at
+            FROM exams e JOIN users u ON e.user_id = u.id
+            {where}
+            ORDER BY e.id DESC
+            LIMIT %s OFFSET %s""",
+        params + [page_size, offset],
+    )
+    items = [
+        {
+            "id": r["id"],
+            "student_id": r["student_id"],
+            "student_name": r["student_name"],
+            "subject": r["subject"],
+            "status": r["status"],
+            "question_count": r["question_count"],
+            "total_score": float(r["total_score"]),
+            "obtained_score": (
+                None if r["obtained_score"] is None else float(r["obtained_score"])
+            ),
+            "created_at": str(r["created_at"]),
+            "submitted_at": (
+                None if r["submitted_at"] is None else str(r["submitted_at"])
+            ),
+        }
+        for r in cursor.fetchall()
+    ]
+    return {"total": total, "items": items}
+
+
+def update_answer_score(db, exam_id: int, seq: int,
+                        score: float, reason: str | None) -> dict:
+    """管理员复核改分：更新单题 score/llm_reason 后重算 exams.obtained_score
+
+    score 范围由路由层校验 [0, full_score]。返回更新后的 seq/score/reason/总分。
+    题号不存在抛 ExamSeqNotFound。
+    """
+    row = next((r for r in get_answers(db, exam_id) if r["seq"] == seq), None)
+    if row is None:
+        raise ExamSeqNotFound([seq])
+    db.execute(
+        "UPDATE exam_answers SET score = %s, llm_reason = %s WHERE id = %s",
+        (score, reason, row["id"]),
+    )
+    cursor = db.execute(
+        "SELECT COALESCE(SUM(score), 0) AS total FROM exam_answers WHERE exam_id = %s",
+        (exam_id,),
+    )
+    obtained = round(float(cursor.fetchone()["total"]), 1)
+    db.execute(
+        "UPDATE exams SET obtained_score = %s WHERE id = %s",
+        (obtained, exam_id),
+    )
+    db.commit()
+    return {"seq": seq, "score": score, "llm_reason": reason, "obtained_score": obtained}

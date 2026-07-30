@@ -317,3 +317,37 @@ class ExamDetailResponse(BaseModel):
     submitted_at: str | None = None
     answers: list[ExamAnswerDetail] = []
     mastery: MasteryOut | None = None
+
+
+# ----- 管理端考试（v4.0 M2 B4） -----
+
+class AdminExamListItem(BaseModel):
+    """GET /api/admin/exams 列表项（含学生信息）"""
+    id: int
+    student_id: str
+    student_name: str
+    subject: str
+    status: str
+    question_count: int
+    total_score: float
+    obtained_score: float | None = None
+    created_at: str
+    submitted_at: str | None = None
+
+
+class AdminExamListOut(BaseModel):
+    total: int
+    items: list[AdminExamListItem]
+
+
+class AdminScoreUpdateRequest(BaseModel):
+    """PUT /api/admin/exams/{id}/answers/{seq}/score 请求"""
+    score: float
+    reason: str | None = None
+
+
+class AdminScoreUpdateResponse(BaseModel):
+    seq: int
+    score: float
+    llm_reason: str | None = None
+    obtained_score: float

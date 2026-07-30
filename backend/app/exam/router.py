@@ -1,14 +1,17 @@
 """考试路由（设计 §4.6）：学生端 6 接口（创建/暂存/交卷/列表/详情/异议）"""
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_admin
 from app.database import get_db
 from app.exam import judger, store
 from app.kb.client import KbDrawError
 from app.kb.subjects import DEFAULT_SUBJECT, is_valid_subject
 from app.models import (
+    AdminExamListOut,
+    AdminScoreUpdateRequest,
+    AdminScoreUpdateResponse,
     ExamAnswersSaveRequest,
     ExamCreateRequest,
     ExamCreateResponse,
@@ -204,3 +207,64 @@ async def dispute_answer(
 
     store.mark_disputed(db, row["id"])
     return {"message": "ok"}
+
+
+# ========== 管理端（v4.0 M2 B4） ==========
+
+admin_router = APIRouter(prefix="/api/admin/exams", tags=["管理员-考试"])
+
+
+@admin_router.get("", response_model=AdminExamListOut)
+async def admin_list_exams(
+    student_id: str | None = Query(None, description="按学号筛选"),
+    subject: str | None = Query(None, description="按科目枚举筛选"),
+    date_from: str | None = Query(None, description="起始日期 YYYY-MM-DD"),
+    date_to: str | None = Query(None, description="结束日期 YYYY-MM-DD"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    admin: dict = Depends(require_admin),
+    db=Depends(get_db),
+):
+    """管理端考试列表（筛选 + 分页，含学生信息）"""
+    return store.list_admin_exams(db, student_id, subject, date_from, date_to,
+                                  page, page_size)
+
+
+@admin_router.get("/{exam_id}", response_model=ExamDetailResponse)
+async def admin_get_exam(
+    exam_id: int,
+    admin: dict = Depends(require_admin),
+    db=Depends(get_db),
+):
+    """管理端考试详情：grading 中也展示参考答案/解析/得分（复核用）"""
+    exam = store.get_exam(db, exam_id)
+    if exam is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="试卷不存在")
+    return store.build_detail(db, exam, reveal=True)
+
+
+@admin_router.put("/{exam_id}/answers/{seq}/score",
+                  response_model=AdminScoreUpdateResponse)
+async def admin_update_score(
+    exam_id: int,
+    seq: int,
+    req: AdminScoreUpdateRequest,
+    admin: dict = Depends(require_admin),
+    db=Depends(get_db),
+):
+    """管理员复核改分：score 范围 [0, full_score]，改后重算总分"""
+    exam = store.get_exam(db, exam_id)
+    if exam is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="试卷不存在")
+
+    row = next((r for r in store.get_answers(db, exam_id) if r["seq"] == seq), None)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="题号不存在")
+
+    full = float(row["full_score"])
+    if req.score < 0 or req.score > full:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"分数需在 0-{full} 之间",
+        )
+    return store.update_answer_score(db, exam_id, seq, req.score, req.reason)

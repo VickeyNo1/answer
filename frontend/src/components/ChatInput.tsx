@@ -6,10 +6,11 @@ interface ChatInputProps {
   onSend: (message: string) => void;
   disabled?: boolean;
   placeholder?: string;
+  initialValue?: string;
 }
 
-export function ChatInput({ onSend, disabled, placeholder }: ChatInputProps) {
-  const [text, setText] = useState("");
+export function ChatInput({ onSend, disabled, placeholder, initialValue }: ChatInputProps) {
+  const [text, setText] = useState(initialValue || "");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // 自适应高度

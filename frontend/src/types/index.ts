@@ -281,3 +281,119 @@ export type SSEEvent =
   | SSEQueueEvent
   | SSEKbRefsEvent
   | SSESuggestionsEvent;
+
+// ========== v4.0 M2：考试相关 ==========
+
+export interface ExamQuestionOut {
+  seq: number;
+  question_type: string;
+  stem: string | null;
+  options: Record<string, string> | null;
+  materials: string | null;
+  sub_questions: string[] | null;
+  full_score: number;
+}
+
+export interface ExamCreateRequest {
+  subject?: string | null;
+  chapter_ids?: string[] | null;
+  counts: Record<string, number>;
+}
+
+export interface ExamCreateResponse {
+  id: number;
+  status: string;
+  question_count: number;
+  total_score: number;
+  questions: ExamQuestionOut[];
+}
+
+export interface ExamSubmitResponse {
+  id: number;
+  status: string;
+  objective_score: number;
+  pending_subjective: number;
+}
+
+export interface ExamListItem {
+  id: number;
+  subject: string;
+  status: string;
+  question_count: number;
+  total_score: number;
+  obtained_score: number | null;
+  created_at: string;
+  submitted_at: string | null;
+}
+
+export interface ExamAnswerDetail {
+  seq: number;
+  question_type: string;
+  stem: string | null;
+  options: Record<string, string> | null;
+  materials: string | null;
+  sub_questions: string[] | null;
+  my_answer: string | null;
+  correct_answer: string | null;
+  explanation: string | null;
+  score: number | null;
+  full_score: number;
+  llm_reason: string | null;
+  disputed: number;
+  knowledge_point_ids: string[];
+}
+
+export interface MasteryKpItem {
+  kp_id: string;
+  rate: number;
+}
+
+export interface MasteryChapterItem {
+  chapter_id: string;
+  rate: number;
+}
+
+export interface MasteryOut {
+  by_kp: MasteryKpItem[];
+  by_chapter: MasteryChapterItem[];
+  weak_kps: MasteryKpItem[];
+}
+
+export interface ExamDetailResponse {
+  id: number;
+  subject: string;
+  status: string;
+  question_count: number;
+  total_score: number;
+  obtained_score: number | null;
+  created_at: string;
+  submitted_at: string | null;
+  answers: ExamAnswerDetail[];
+  mastery: MasteryOut | null;
+}
+
+// 管理端
+export interface AdminExamListItem {
+  id: number;
+  student_id: string;
+  student_name: string;
+  subject: string;
+  status: string;
+  question_count: number;
+  total_score: number;
+  obtained_score: number | null;
+  created_at: string;
+  submitted_at: string | null;
+}
+
+export interface AdminExamListOut {
+  total: number;
+  items: AdminExamListItem[];
+}
+
+export interface AdminScoreUpdateResponse {
+  seq: number;
+  score: number;
+  llm_reason: string | null;
+  obtained_score: number;
+}
