@@ -59,7 +59,33 @@ ALTER_SQL = [
     "ALTER TABLE usage_logs MODIFY completion_tokens INT NOT NULL DEFAULT 0 COMMENT '输出 token 数（Function Calling 两轮累加）'",
     "ALTER TABLE usage_logs MODIFY total_tokens INT NOT NULL DEFAULT 0 COMMENT '总 token 数'",
     "ALTER TABLE usage_logs MODIFY cost DOUBLE NOT NULL DEFAULT 0 COMMENT '费用（元）= tokens/1000 × 单价'",
+    "ALTER TABLE usage_logs MODIFY task_type VARCHAR(16) NOT NULL DEFAULT 'chat' COMMENT '任务类型：chat=对话/exam=判卷/profile=画像总结'",
     "ALTER TABLE usage_logs MODIFY created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'",
+    # ===== exams（v4.0-M2）=====
+    "ALTER TABLE exams COMMENT='试卷表'",
+    "ALTER TABLE exams MODIFY id INT AUTO_INCREMENT COMMENT '主键'",
+    "ALTER TABLE exams MODIFY user_id INT NOT NULL COMMENT '考生 ID（users.id）'",
+    "ALTER TABLE exams MODIFY subject VARCHAR(32) NOT NULL COMMENT '科目枚举值（如 cpa_acc）'",
+    'ALTER TABLE exams MODIFY chapter_ids TEXT NULL COMMENT \'章节范围 JSON 数组（如 ["ACC-03"]），NULL=全科目\'',
+    "ALTER TABLE exams MODIFY status VARCHAR(16) NOT NULL DEFAULT 'ongoing' COMMENT '状态：ongoing=进行中 / grading=判卷中 / graded=已完成'",
+    "ALTER TABLE exams MODIFY question_count INT NOT NULL COMMENT '题目总数'",
+    "ALTER TABLE exams MODIFY total_score DECIMAL(5,1) NOT NULL COMMENT '试卷满分'",
+    "ALTER TABLE exams MODIFY obtained_score DECIMAL(5,1) NULL COMMENT '得分（判卷完成后写入）'",
+    "ALTER TABLE exams MODIFY created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '开卷时间'",
+    "ALTER TABLE exams MODIFY submitted_at DATETIME NULL COMMENT '交卷时间'",
+    # ===== exam_answers（v4.0-M2）=====
+    "ALTER TABLE exam_answers COMMENT='考试作答明细表（开卷时预置行）'",
+    "ALTER TABLE exam_answers MODIFY id INT AUTO_INCREMENT COMMENT '主键'",
+    "ALTER TABLE exam_answers MODIFY exam_id INT NOT NULL COMMENT '所属试卷 ID（exams.id）'",
+    "ALTER TABLE exam_answers MODIFY seq INT NOT NULL COMMENT '题号（1 起）'",
+    "ALTER TABLE exam_answers MODIFY question_id VARCHAR(32) NOT NULL COMMENT '知识库题目 ID（如 Q-0012）'",
+    "ALTER TABLE exam_answers MODIFY question_type VARCHAR(8) NOT NULL COMMENT '题型：单选/多选/计算/综合'",
+    "ALTER TABLE exam_answers MODIFY question_snapshot TEXT NOT NULL COMMENT '题目快照 JSON（题干/选项/答案/解析/materials/sub_questions/knowledge_point_ids 全量，防知识库改题导致判卷错位）'",
+    "ALTER TABLE exam_answers MODIFY full_score DECIMAL(5,1) NOT NULL COMMENT '本题满分'",
+    'ALTER TABLE exam_answers MODIFY student_answer TEXT NULL COMMENT \'学生作答（客观题存选项串如 "ABD"，主观题存文字）\'',
+    "ALTER TABLE exam_answers MODIFY score DECIMAL(5,1) NULL COMMENT '得分（NULL=未判/判卷失败）'",
+    "ALTER TABLE exam_answers MODIFY llm_reason TEXT NULL COMMENT 'LLM 判分理由（仅主观题）'",
+    "ALTER TABLE exam_answers MODIFY disputed TINYINT NOT NULL DEFAULT 0 COMMENT '学生异议标记：1=有异议'",
 ]
 
 

@@ -93,6 +93,7 @@ TABLES_SQL = [
         completion_tokens INT NOT NULL DEFAULT 0 COMMENT '输出 token 数（Function Calling 两轮累加）',
         total_tokens INT NOT NULL DEFAULT 0 COMMENT '总 token 数',
         cost DOUBLE NOT NULL DEFAULT 0 COMMENT '费用（元）= tokens/1000 × 单价',
+        task_type VARCHAR(16) NOT NULL DEFAULT 'chat' COMMENT '任务类型：chat=对话/exam=判卷/profile=画像总结',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
         INDEX idx_usage_created (created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='大模型用量与费用日志表'""",
@@ -125,18 +126,53 @@ TABLES_SQL = [
         setting_value VARCHAR(255) NOT NULL COMMENT '设置值（统一存字符串，读取时转型）',
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='全局设置表（K-V 形式）'""",
+    """CREATE TABLE IF NOT EXISTS exams (
+        id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+        user_id INT NOT NULL COMMENT '考生 ID（users.id）',
+        subject VARCHAR(32) NOT NULL COMMENT '科目枚举值（如 cpa_acc）',
+        chapter_ids TEXT NULL COMMENT '章节范围 JSON 数组（如 ["ACC-03"]），NULL=全科目',
+        status VARCHAR(16) NOT NULL DEFAULT 'ongoing' COMMENT '状态：ongoing=进行中 / grading=判卷中 / graded=已完成',
+        question_count INT NOT NULL COMMENT '题目总数',
+        total_score DECIMAL(5,1) NOT NULL COMMENT '试卷满分',
+        obtained_score DECIMAL(5,1) NULL COMMENT '得分（判卷完成后写入）',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '开卷时间',
+        submitted_at DATETIME NULL COMMENT '交卷时间',
+        INDEX idx_user_status (user_id, status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='试卷表'""",
+    """CREATE TABLE IF NOT EXISTS exam_answers (
+        id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+        exam_id INT NOT NULL COMMENT '所属试卷 ID（exams.id）',
+        seq INT NOT NULL COMMENT '题号（1 起）',
+        question_id VARCHAR(32) NOT NULL COMMENT '知识库题目 ID（如 Q-0012）',
+        question_type VARCHAR(8) NOT NULL COMMENT '题型：单选/多选/计算/综合',
+        question_snapshot TEXT NOT NULL COMMENT '题目快照 JSON（题干/选项/答案/解析/materials/sub_questions/knowledge_point_ids 全量，防知识库改题导致判卷错位）',
+        full_score DECIMAL(5,1) NOT NULL COMMENT '本题满分',
+        student_answer TEXT NULL COMMENT '学生作答（客观题存选项串如 "ABD"，主观题存文字）',
+        score DECIMAL(5,1) NULL COMMENT '得分（NULL=未判/判卷失败）',
+        llm_reason TEXT NULL COMMENT 'LLM 判分理由（仅主观题）',
+        disputed TINYINT NOT NULL DEFAULT 0 COMMENT '学生异议标记：1=有异议',
+        UNIQUE KEY uk_exam_seq (exam_id, seq)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='考试作答明细表（开卷时预置行）'""",
 ]
 
-# 存量库幂等补列：列名 -> ALTER 语句（新库已在 CREATE TABLE 中，仅缺列时执行）
-USERS_EXTRA_COLUMNS = {
-    "daily_question_limit": (
-        "ALTER TABLE users ADD COLUMN daily_question_limit INT NULL "
-        "COMMENT '单人每日提问上限；NULL=跟随全局默认（app_settings）'"
-    ),
-    "memory_enabled": (
-        "ALTER TABLE users ADD COLUMN memory_enabled TINYINT NULL "
-        "COMMENT '单人记忆开关：1=开 / 0=关；NULL=跟随全局默认'"
-    ),
+# 存量库幂等补列：表名 -> {列名: ALTER 语句}（新库已在 CREATE TABLE 中，仅缺列时执行）
+EXTRA_COLUMNS = {
+    "users": {
+        "daily_question_limit": (
+            "ALTER TABLE users ADD COLUMN daily_question_limit INT NULL "
+            "COMMENT '单人每日提问上限；NULL=跟随全局默认（app_settings）'"
+        ),
+        "memory_enabled": (
+            "ALTER TABLE users ADD COLUMN memory_enabled TINYINT NULL "
+            "COMMENT '单人记忆开关：1=开 / 0=关；NULL=跟随全局默认'"
+        ),
+    },
+    "usage_logs": {
+        "task_type": (
+            "ALTER TABLE usage_logs ADD COLUMN task_type VARCHAR(16) NOT NULL DEFAULT 'chat' "
+            "COMMENT '任务类型：chat=对话/exam=判卷/profile=画像总结'"
+        ),
+    },
 }
 
 
@@ -164,15 +200,16 @@ def init_db() -> None:
                 cursor.execute(sql)
 
             # 3. 存量库幂等补列（新库建表已含，仅检测缺列时 ALTER）
-            cursor.execute(
-                "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
-                "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'users'",
-                (settings.MYSQL_DB,),
-            )
-            existing = {row["COLUMN_NAME"] for row in cursor.fetchall()}
-            for column, alter_sql in USERS_EXTRA_COLUMNS.items():
-                if column not in existing:
-                    cursor.execute(alter_sql)
+            for table, columns in EXTRA_COLUMNS.items():
+                cursor.execute(
+                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s",
+                    (settings.MYSQL_DB, table),
+                )
+                existing = {row["COLUMN_NAME"] for row in cursor.fetchall()}
+                for column, alter_sql in columns.items():
+                    if column not in existing:
+                        cursor.execute(alter_sql)
         conn.commit()
     finally:
         conn.close()

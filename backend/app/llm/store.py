@@ -130,15 +130,16 @@ def compute_cost(model_name: str, prompt_tokens: int, completion_tokens: int) ->
 
 
 def record_usage(model_name: str, user_id: int | None, conversation_id: int | None,
-                 prompt_tokens: int, completion_tokens: int) -> None:
+                 prompt_tokens: int, completion_tokens: int,
+                 task_type: str = "chat") -> None:
     total = prompt_tokens + completion_tokens
     cost = compute_cost(model_name, prompt_tokens, completion_tokens)
     with get_db_ctx() as db:
         db.execute(
             """INSERT INTO usage_logs
-               (model_name, user_id, conversation_id, prompt_tokens, completion_tokens, total_tokens, cost)
-               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-            (model_name, user_id, conversation_id, prompt_tokens, completion_tokens, total, cost),
+               (model_name, user_id, conversation_id, prompt_tokens, completion_tokens, total_tokens, cost, task_type)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (model_name, user_id, conversation_id, prompt_tokens, completion_tokens, total, cost, task_type),
         )
         db.commit()
 

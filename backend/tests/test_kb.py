@@ -70,6 +70,77 @@ class TestKBClient:
         assert calls["n"] == 1  # 不重试
 
 
+# ========== 考试抽题 draw_exam（v4.0-M2） ==========
+
+SAMPLE_QUESTION = {
+    "score": 0.9, "knowledge_point_ids": ["ACC-01-03-01"],
+    "question_id": "Q-0012", "chapter_id": "ACC-01", "chapter": "第一章 总论",
+    "question_type": "单选", "stem": "下列哪项…", "options": {"A": "…", "B": "…"},
+    "answer": "B", "explanation": "…", "materials": None, "sub_questions": None,
+}
+
+
+class TestDrawExam:
+
+    def test_draw_success(self, monkeypatch):
+        payload = {"code": 0, "questions": [SAMPLE_QUESTION]}
+        captured = {}
+
+        def fake_post(url, json=None, **k):
+            captured["url"] = url
+            captured["payload"] = json
+            return FakeHttpResponse(200, payload)
+
+        monkeypatch.setattr("app.kb.client.httpx.post", fake_post)
+        questions = kb_client.draw_exam("cpa_acc", ["ACC-01"], {"单选": 1})
+        assert len(questions) == 1
+        assert questions[0]["question_id"] == "Q-0012"
+        assert captured["url"].endswith("/kb/exam/draw")
+        assert captured["payload"] == {
+            "subject": "cpa_acc", "chapter_ids": ["ACC-01"], "counts": {"单选": 1},
+        }
+
+    def test_draw_insufficient_returns_actual(self, monkeypatch):
+        """题量不足时按知识库实际返回数量，不报错"""
+        payload = {"code": 0, "questions": [SAMPLE_QUESTION]}  # 请求 5 题只返 1 题
+        monkeypatch.setattr(
+            "app.kb.client.httpx.post", lambda *a, **k: FakeHttpResponse(200, payload)
+        )
+        questions = kb_client.draw_exam("cpa_acc", None, {"单选": 5})
+        assert len(questions) == 1
+
+    def test_draw_timeout_raises_no_retry(self, monkeypatch):
+        """超时不降级不重试，直接抛 KbDrawError（与 search 刻意不同）"""
+        calls = {"n": 0}
+
+        def boom(*a, **k):
+            calls["n"] += 1
+            raise TimeoutError("connect timeout")
+
+        monkeypatch.setattr("app.kb.client.httpx.post", boom)
+        with pytest.raises(kb_client.KbDrawError):
+            kb_client.draw_exam("cpa_acc", None, {"单选": 5})
+        assert calls["n"] == 1
+
+    def test_draw_code_error_raises(self, monkeypatch):
+        """code≠0（5001 内部错）直接抛 KbDrawError"""
+        monkeypatch.setattr(
+            "app.kb.client.httpx.post",
+            lambda *a, **k: FakeHttpResponse(500, {"code": 5001, "message": "内部错误"}),
+        )
+        with pytest.raises(kb_client.KbDrawError):
+            kb_client.draw_exam("cpa_acc", None, {"单选": 5})
+
+    def test_draw_http_error_raises(self, monkeypatch):
+        """HTTP 4001 参数错也抛 KbDrawError（考试链路无降级）"""
+        monkeypatch.setattr(
+            "app.kb.client.httpx.post",
+            lambda *a, **k: FakeHttpResponse(400, {"code": 4001, "message": "参数错误"}),
+        )
+        with pytest.raises(kb_client.KbDrawError):
+            kb_client.draw_exam("cpa_acc", None, {})
+
+
 # ========== 结果拼接 ==========
 
 class TestFormatResults:

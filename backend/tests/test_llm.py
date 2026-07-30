@@ -160,6 +160,25 @@ class TestUsage:
         names = [m["model_name"] for m in data["by_model"]]
         assert "test_usage" in names
 
+    def test_record_usage_task_type(self, client, admin_headers):
+        """task_type 落库：缺省 chat，显式传 exam（v4.0-M2）"""
+        client.post("/api/admin/models", json={
+            "provider": "ali", "model_name": "test_task_type",
+            "display_name": "任务类型", "price_in": 0.001, "price_out": 0.002,
+        }, headers=admin_headers)
+
+        store.record_usage("test_task_type", 1, None, 10, 5)  # 缺省 chat
+        store.record_usage("test_task_type", 1, None, 20, 8, task_type="exam")
+
+        with get_db_ctx() as db:
+            cursor = db.execute(
+                "SELECT task_type, prompt_tokens FROM usage_logs "
+                "WHERE model_name = 'test_task_type' ORDER BY id"
+            )
+            rows = list(cursor.fetchall())
+        assert [r["task_type"] for r in rows] == ["chat", "exam"]
+        assert rows[1]["prompt_tokens"] == 20
+
     def test_usage_days_param(self, client, admin_headers):
         """days 参数控制趋势天数"""
         resp = client.get("/api/admin/models/usage?days=3", headers=admin_headers)

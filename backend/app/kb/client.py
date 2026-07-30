@@ -1,7 +1,8 @@
-"""知识库检索服务 HTTP 客户端（机器A /kb/search，契约见 doc/知识库对接文档.md）
+"""知识库检索服务 HTTP 客户端（机器A /kb/search + /kb/exam/draw，契约见 doc/知识库对接文档.md）
 
 v4.0：每次 /kb/search 调用后写 kb_search_logs（含失败情形，六态状态），
 日志写失败不影响主链路；另提供 probe() 供 /api/health 探测。
+v4.0-M2：draw_exam() 考试抽题，失败不降级直接抛 KbDrawError（与 search 刻意不同）。
 """
 import json
 import logging
@@ -14,6 +15,10 @@ from app.database import get_db_ctx
 from app.kb.prompt import collect_kp_ids
 
 logger = logging.getLogger(__name__)
+
+
+class KbDrawError(Exception):
+    """考试抽题失败（超时/HTTP 错/code≠0）；路由层转 502，不降级"""
 
 
 def _log_search(
@@ -123,6 +128,43 @@ def search(
             0, [], fail_status if attempt == 0 else "degraded", elapsed_ms,
         )
     return None
+
+
+def draw_exam(subject: str, chapter_ids: list[str] | None,
+              counts: dict[str, int]) -> list[dict]:
+    """调用知识库考试抽题接口 POST /kb/exam/draw。
+
+    与 search() 刻意不同：**失败不降级**，超时/HTTP 错/code≠0 直接抛 KbDrawError
+    （考试没题就是办不成，由路由层转 502）；不写 kb_search_logs（该表专属答疑检索链路）。
+    某题型题量不足时知识库返回实际抽到的数量，调用方按实际返回组卷。
+    """
+    settings = get_settings()
+    url = f"{settings.KB_BASE_URL.rstrip('/')}/kb/exam/draw"
+    payload = {"subject": subject, "chapter_ids": chapter_ids, "counts": counts}
+    headers = {}
+    if settings.KB_TOKEN:
+        headers["X-KB-Token"] = settings.KB_TOKEN
+
+    start = time.monotonic()
+    try:
+        resp = httpx.post(url, json=payload, headers=headers, timeout=settings.KB_TIMEOUT)
+        data = resp.json()
+    except Exception as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        logger.error("kb_exam_draw 超时/网络异常 subject=%s elapsed=%dms: %s",
+                     subject, elapsed_ms, e)
+        raise KbDrawError("知识库抽题超时或网络异常") from e
+
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+    if resp.status_code != 200 or data.get("code") != 0:
+        logger.error("kb_exam_draw 失败 subject=%s http=%d code=%s elapsed=%dms",
+                     subject, resp.status_code, data.get("code"), elapsed_ms)
+        raise KbDrawError(f"知识库抽题失败（code={data.get('code')}）")
+
+    questions = data.get("questions") or []
+    logger.info("kb_exam_draw ok subject=%s questions=%d elapsed=%dms",
+                subject, len(questions), elapsed_ms)
+    return questions
 
 
 def probe() -> bool:
