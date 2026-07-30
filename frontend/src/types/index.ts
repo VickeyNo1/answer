@@ -397,3 +397,79 @@ export interface AdminScoreUpdateResponse {
   llm_reason: string | null;
   obtained_score: number;
 }
+
+// ========== v4.0 M3：学生记忆 ==========
+
+export interface WrongQuestionListItem {
+  id: number;
+  question_type: string | null;
+  stem: string | null;
+  options: Record<string, string> | null;
+  materials: string | null;
+  sub_questions: string[] | null;
+  wrong_count: number;
+  mastered: number;
+  last_wrong_at: string;
+  knowledge_point_ids: string[];
+  subject: string;
+}
+
+export interface PaginatedWrongQuestions {
+  total: number;
+  items: WrongQuestionListItem[];
+}
+
+export interface WrongQuestionRetryRequest {
+  answer: string;
+}
+
+export interface WrongQuestionRetryResponse {
+  correct: boolean;
+  correct_answer: string | null;
+  explanation: string | null;
+  mastered: number;
+}
+
+export interface WeakKpItem {
+  kp_id: string;
+  rate: number;
+  wrong_count: number;
+}
+
+export interface RecentExamSummary {
+  subject: string;
+  score: number;
+  total: number;
+  date: string | null;
+}
+
+export interface ProfileOut {
+  style_profile: string | null;
+  weak_kps: WeakKpItem[];
+  recent_exam: RecentExamSummary | null;
+  memory_enabled: boolean;
+}
+
+export interface HotWrongKpItem {
+  kp_id: string;
+  wrong_count: number;
+}
+
+export interface WrongStatsOut {
+  total: number;
+  unmastered: number;
+  hot_wrong_kps: HotWrongKpItem[];
+}
+
+export interface AdminStudentProfile {
+  style_profile: string | null;
+  weak_kps: WeakKpItem[];
+  recent_exam: RecentExamSummary | null;
+  wrong_stats: WrongStatsOut;
+}
+
+export interface AdminWrongStatItem {
+  kp_id: string;
+  wrong_count: number;
+  student_count: number;
+}

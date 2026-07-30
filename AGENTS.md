@@ -2,7 +2,7 @@
 
 > 本文件是 **AI 编码助手的唯一入口文档**。开始任何任务前先读本文件，再按需跳转到 `doc/` 下的详细文档。
 > 项目：会计答疑智能体（大模型 Function Calling 对接外部知识库检索服务的会计专业 AI 答疑系统）
-> 文档基线版本：v4.0（M1） ｜ 维护约定见 [§9](#9-文档维护约定ai-必读)
+> 文档基线版本：v4.0（M3） ｜ 维护约定见 [§9](#9-文档维护约定ai-必读)
 
 ---
 
@@ -42,6 +42,7 @@
 - **后端**（`backend/`，端口 8000）：FastAPI，提供认证、对话（Function Calling + 流式）、答案反馈、管理后台（含全局设置/权益/检索报表）、大模型管理、科目列表接口。
 - **前端**（`frontend/`，端口 3000）：Next.js App Router，学生对话页 + 管理员后台。
 - **核心链路（v4.0 M1）**：学生提问 → 前置校验（每日配额 → 单人串行 → 并发闸门+有限排队，任一不过 429）→ dashscope 大模型带 `search_cpa_knowledge` 工具流式生成 → 模型决定是否检索 → 后端调机器A 知识库检索服务 `POST /kb/search`（subject 由后端注入，每次调用写 `kb_search_logs`）→ 拼接检索结果作二轮流式回答（SSE，含 `kb_refs` 引用卡片、`suggestions` 追问建议）→ 落库知识点编号（`knowledge_point_ids`）并记录用量费用。
+- **学生记忆（v4.0 M3）**：三层记忆——错题本（纯程序，交卷判分时自动入本）+ 薄弱点（实时 SQL 聚合，不落快照）+ 学习风格画像（LLM 覆盖式总结，每 `profile_update_interval` 轮触发）。记忆注入块 ≤300 token 拼入 system prompt。开关「控用不控记」：关时不注入/不总结，但数据照常积累。
 
 两大要点（v3.0）：
 1. **知识库对接**：本地 ChromaDB RAG 全部移除，改为对接机器A 外部知识库检索服务；大模型通过 Function Calling 自主决定是否检索，检索失败自动降级为大模型直答（不报错）。
@@ -93,6 +94,7 @@ v4.0 M1 试点底座新增要点：
 | `admin/` | 管理后台 | `router.py`（学生增删改查/批量、统计；v4.0 新增：全局设置 GET/PUT、单人权益、反馈明细、检索报表 kb/stats + kb/hot-kps）、`stats.py`（聚合统计）、`entitlements.py`（权益生效值：users 覆盖值 ?? 全局默认，v4.0） |
 | `llm/` | 大模型管理 | `router.py`（模型 CRUD/activate/usage）、`store.py`（模型与用量数据访问 + 费用计算） |
 | `exam/` | 考试系统（v4.0 M2） | `router.py`（学生端 6 接口 + 管理端 3 接口）、`store.py`（组卷/暂存/交卷/掌握度/管理端数据访问）、`judger.py`（客观判分 + 主观题 LLM 异步判卷 `ThreadPoolExecutor`） |
+| `profile/` | 学生记忆（v4.0 M3） | `router.py`（学生端 3 接口 + 管理端 2 接口）、`store.py`（错题本 CRUD + 画像 + 薄弱点实时聚合 + 记忆注入块构建）、`summarizer.py`（LLM 画像总结，复用 `judger._bg_executor` 线程池） |
 
 ### 前端 `frontend/src/`
 
@@ -100,6 +102,7 @@ v4.0 M1 试点底座新增要点：
 |------|------|
 | `app/page.tsx` | 学生对话主页（会话列表、流式对话、科目选择；v4.0 M2 新增 `?ask=&subject=` 预填 + 「去考试」入口） |
 | `app/exam/page.tsx` | 考试页（v4.0 M2）：三步状态机——组卷→答题→成绩单（grading 5s 轮询、掌握度条、薄弱点「问 AI」、主观题异议） |
+| `app/wrong-questions/page.tsx` | 错题本页（v4.0 M3）：错题列表（筛选科目/状态 + 分页）+ 重练弹窗（客观题单选/主观题文本）+ 知识点「问 AI」跳转 |
 | `app/login/page.tsx` | 登录页 |
 | `app/admin/page.tsx` | 管理后台，Tab 容器（统计/学生/大模型/考试/运营报表） |
 | `components/` | `AuthGuard`、`ChatInput`（含 `initialValue` 预填）、`ChatWindow`（含「正在检索知识库…」提示）、`ConversationList` |
@@ -166,7 +169,7 @@ npx tsc --noEmit       # 类型检查
 
 ## 7. 数据库表结构
 
-MySQL 8.4（机器A，InnoDB，utf8mb4），建表见 `app/database.py`（`init_db()` 启动时 `CREATE DATABASE IF NOT EXISTS` + 建 10 张表，建表 SQL 含表/字段中文注释；存量库幂等补 users 新列 + usage_logs.task_type 列）。存量库补注释用 `backend/scripts/add_table_comments.py`（幂等，改注释时与 `TABLES_SQL` 两处同改）。**无 `subjects` 表**（科目改为知识库侧枚举，见 §6）。
+MySQL 8.4（机器A，InnoDB，utf8mb4），建表见 `app/database.py`（`init_db()` 启动时 `CREATE DATABASE IF NOT EXISTS` + 建 12 张表，建表 SQL 含表/字段中文注释；存量库幂等补 users 新列 + usage_logs.task_type 列）。存量库补注释用 `backend/scripts/add_table_comments.py`（幂等，改注释时与 `TABLES_SQL` 两处同改）。**无 `subjects` 表**（科目改为知识库侧枚举，见 §6）。
 
 | 表 | 关键列 | 说明 |
 |----|--------|------|
@@ -180,12 +183,14 @@ MySQL 8.4（机器A，InnoDB，utf8mb4），建表见 `app/database.py`（`init_
 | `app_settings` ✦ | `id, setting_key(UNIQUE), setting_value(VARCHAR(255)), updated_at` | 全局设置（K-V）；值统一存字符串，读时按键转型（`app/settings_store.py`） |
 | `exams` ✦✦ | `id, user_id, subject, chapter_ids(JSON,可空), status('ongoing'/'grading'/'graded'), question_count, total_score, obtained_score(DECIMAL,可空), created_at, submitted_at(可空)` | 试卷（v4.0 M2）；`idx_user_status` 索引支撑「每人仅 1 张 ongoing」 |
 | `exam_answers` ✦✦ | `id, exam_id, seq, question_id, question_type, question_snapshot(TEXT), full_score, student_answer(TEXT,可空), score(DECIMAL,可空), llm_reason(TEXT,可空), disputed(TINYINT DEFAULT 0), created_at` | 试卷答题（v4.0 M2）；`uk_exam_seq(exam_id,seq)` 唯一；`question_snapshot` 存题目全量 JSON（含答案解析） |
+| `student_profiles` ✦✦✦ | `user_id(INT PK), style_profile(VARCHAR 500,可空), dialog_count_since_update(INT DEFAULT 0), updated_at(DATETIME)` | 学生学习风格画像（v4.0 M3）；一人一行；`style_profile` 为 LLM 生成的画像文本（硬限 200 字符） |
+| `wrong_questions` ✦✦✦ | `id, user_id, subject, question_id(VARCHAR 32), question_snapshot(TEXT), my_answer(TEXT,可空), wrong_count(INT DEFAULT 1), mastered(TINYINT DEFAULT 0), last_wrong_at(DATETIME), source_exam_id(INT,可空), last_mastered_at(DATETIME,可空)` | 错题本（v4.0 M3）；`uk_user_question(user_id,question_id)` 唯一 → UPSERT；`idx_user_mastered(user_id,mastered)` 索引 |
 
-> 标 ✦ 的为 v4.0 M1 新增；✦✦ 为 v4.0 M2 新增。不迁移旧 SQLite 数据；MySQL 为全新库，首次 `seed.py` 写入管理员 + 默认模型 + 默认全局设置。
+> 标 ✦ 的为 v4.0 M1 新增；✦✦ 为 v4.0 M2 新增；✦✦✦ 为 v4.0 M3 新增。不迁移旧 SQLite 数据；MySQL 为全新库，首次 `seed.py` 写入管理员 + 默认模型 + 默认全局设置。
 
 ---
 
-## 8. 接口一览（37 个业务接口）
+## 8. 接口一览（42 个业务接口）
 
 Base URL：`http://localhost:8000`。权限：🟢 全员登录 ｜ 🔒 管理员。
 **接口明细（请求/响应/示例）是 `doc/接口文档.md` 的单一职责,本节仅作分组索引。**
@@ -198,6 +203,7 @@ Base URL：`http://localhost:8000`。权限：🟢 全员登录 ｜ 🔒 管理�
 | 大模型管理 | `app/llm/` | 6 | 🔒 | 模型 CRUD、`activate` 切换、`usage` 用量费用 |
 | 科目 | `app/kb/subjects.py` | 1 | 🟢 | `GET /api/subjects` 返回已上线科目枚举 |
 | 考试 | `app/exam/` | 9 | 🟢 / 🔒 | v4.0 M2 新增：学生端 6 个（创建/暂存/交卷/列表/详情/异议）+ 管理端 3 个（列表筛选/详情/复核改分） |
+| 学生记忆 | `app/profile/` | 5 | 🟢 / 🔒 | v4.0 M3 新增：学生端 3 个（错题本列表/重练判分/我的画像）+ 管理端 2 个（学生画像/全校错题统计） |
 
 > 反馈提交（`POST /api/feedback`）属对话模块（代码在 `chat/router.py`）；反馈明细/全局设置/权益/检索报表属管理员模块（代码在 `admin/router.py`）。
 > 另有运维接口 `GET /api/health`（健康检查，无需认证；v4.0 升级为三字段 `status/mysql/kb`，任一依赖 fail 时 `status=degraded` 但 HTTP 仍 200，KB 探测见 `app/kb/client.py::probe`）。全部接口的路径与字段明细见 `doc/接口文档.md`。

@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { apiGet, apiDelete } from "@/lib/api";
 import { getRole, clearAuth } from "@/lib/auth";
 import { sendChatMessage } from "@/lib/sse";
-import type { UserInfo, ConversationOut, MessageOut, Subject, KbRef } from "@/types";
+import type { UserInfo, ConversationOut, MessageOut, Subject, KbRef, ProfileOut } from "@/types";
 import { ConversationList } from "@/components/ConversationList";
 import { ChatWindow } from "@/components/ChatWindow";
 import { ChatInput } from "@/components/ChatInput";
@@ -30,6 +30,7 @@ function HomeContent() {
   const [role, setRole] = useState<string | null>(null);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [showProfileModal, setShowProfileModal] = useState(false);
 
   // 对话列表
   const [conversations, setConversations] = useState<ConversationOut[]>([]);
@@ -319,7 +320,25 @@ function HomeContent() {
                     className="fixed inset-0 z-10"
                     onClick={() => setUserMenuOpen(false)}
                   />
-                  <div className="absolute right-0 top-full z-20 mt-1 w-32 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                  <div className="absolute right-0 top-full z-20 mt-1 w-40 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                    <button
+                      onClick={() => {
+                        setUserMenuOpen(false);
+                        router.push("/wrong-questions");
+                      }}
+                      className="block w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+                    >
+                      错题本
+                    </button>
+                    <button
+                      onClick={() => {
+                        setUserMenuOpen(false);
+                        setShowProfileModal(true);
+                      }}
+                      className="block w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+                    >
+                      我的画像
+                    </button>
                     <button
                       onClick={() => {
                         setUserMenuOpen(false);
@@ -439,6 +458,97 @@ function HomeContent() {
       {showPasswordModal && (
         <ChangePasswordModal onClose={() => setShowPasswordModal(false)} />
       )}
+
+      {/* 我的画像弹窗 */}
+      {showProfileModal && (
+        <ProfileModal onClose={() => setShowProfileModal(false)} />
+      )}
+    </div>
+  );
+}
+
+/** 我的画像弹窗 */
+function ProfileModal({ onClose }: { onClose: () => void }) {
+  const [profile, setProfile] = useState<ProfileOut | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    apiGet<ProfileOut>("/api/me/profile")
+      .then(setProfile)
+      .catch((err) => setError(err instanceof Error ? err.message : "加载失败"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      onClick={onClose}
+    >
+      <div
+        className="max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-xl bg-white p-6 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="text-lg font-semibold text-gray-900">我的学习画像</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button>
+        </div>
+        {loading ? (
+          <p className="py-8 text-center text-sm text-gray-400">加载中...</p>
+        ) : error ? (
+          <div className="rounded-lg bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</div>
+        ) : profile ? (
+          <div className="space-y-4">
+            {/* 记忆开关状态 */}
+            <div className="flex items-center gap-2 text-sm">
+              <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${profile.memory_enabled ? "bg-green-50 text-green-700" : "bg-gray-100 text-gray-500"}`}>
+                {profile.memory_enabled ? "记忆功能已开启" : "记忆功能已关闭"}
+              </span>
+            </div>
+
+            {/* 学习风格画像 */}
+            <div>
+              <h4 className="mb-1 text-sm font-medium text-gray-700">学习风格</h4>
+              {profile.style_profile ? (
+                <p className="rounded-lg bg-gray-50 px-4 py-3 text-sm text-gray-600">{profile.style_profile}</p>
+              ) : (
+                <p className="text-sm text-gray-400">暂无画像数据（对话积累后自动生成）</p>
+              )}
+            </div>
+
+            {/* 薄弱知识点 */}
+            <div>
+              <h4 className="mb-1 text-sm font-medium text-gray-700">薄弱知识点</h4>
+              {profile.weak_kps.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {profile.weak_kps.map((kp) => (
+                    <span
+                      key={kp.kp_id}
+                      className="inline-flex items-center gap-1 rounded-lg bg-red-50 px-3 py-1 text-xs text-red-600"
+                    >
+                      {kp.kp_id}
+                      <span className="text-red-400">掌握{Math.round(kp.rate * 100)}%</span>
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-400">暂无薄弱知识点</p>
+              )}
+            </div>
+
+            {/* 最近考试 */}
+            {profile.recent_exam && (
+              <div>
+                <h4 className="mb-1 text-sm font-medium text-gray-700">最近考试</h4>
+                <p className="text-sm text-gray-600">
+                  {profile.recent_exam.date} {profile.recent_exam.subject}：
+                  {profile.recent_exam.score}/{profile.recent_exam.total}分
+                </p>
+              </div>
+            )}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

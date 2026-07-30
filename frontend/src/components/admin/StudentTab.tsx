@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { apiGet, apiPost, apiPut, apiDelete, apiUpload } from "@/lib/api";
-import type { UserInfo, PaginatedStudents, StudentCreate, AppSettings, Entitlements } from "@/types";
+import type { UserInfo, PaginatedStudents, StudentCreate, AppSettings, Entitlements, AdminStudentProfile } from "@/types";
 
 export function StudentTab() {
   const [students, setStudents] = useState<UserInfo[]>([]);
@@ -24,6 +24,9 @@ export function StudentTab() {
   const [entLimit, setEntLimit] = useState("");
   const [entMemory, setEntMemory] = useState("null");
   const [entSaving, setEntSaving] = useState(false);
+
+  // 查看画像
+  const [profileStudent, setProfileStudent] = useState<UserInfo | null>(null);
 
   // 批量导入
   const [batchResult, setBatchResult] = useState<{
@@ -320,6 +323,12 @@ export function StudentTab() {
                         </button>
                       )}
                       <button
+                        onClick={() => setProfileStudent(s)}
+                        className="rounded-lg px-3 py-1 text-sm text-gray-600 hover:bg-gray-100"
+                      >
+                        画像
+                      </button>
+                      <button
                         onClick={() => setEditingStudent(s)}
                         className="rounded-lg px-3 py-1 text-sm text-blue-600 hover:bg-blue-50"
                       >
@@ -403,6 +412,14 @@ export function StudentTab() {
       {/* 全局设置弹窗 */}
       {showSettings && (
         <GlobalSettingsModal onClose={() => setShowSettings(false)} />
+      )}
+
+      {/* 学生画像弹窗 */}
+      {profileStudent && (
+        <AdminProfileModal
+          student={profileStudent}
+          onClose={() => setProfileStudent(null)}
+        />
       )}
     </div>
   );
@@ -555,6 +572,118 @@ function EditStudentModal({
         </div>
       </form>
     </Modal>
+  );
+}
+
+/** 管理端学生画像弹窗（GET /api/admin/students/{id}/profile） */
+function AdminProfileModal({
+  student,
+  onClose,
+}: {
+  student: UserInfo;
+  onClose: () => void;
+}) {
+  const [profile, setProfile] = useState<AdminStudentProfile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    apiGet<AdminStudentProfile>(`/api/admin/students/${student.id}/profile`)
+      .then(setProfile)
+      .catch((err) => setError(err instanceof Error ? err.message : "加载失败"))
+      .finally(() => setLoading(false));
+  }, [student.id]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      onClick={onClose}
+    >
+      <div
+        className="max-h-[80vh] w-full max-w-lg overflow-y-auto rounded-xl bg-white p-6 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="text-lg font-semibold text-gray-900">
+            {student.name}（{student.student_id}）的学习画像
+          </h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button>
+        </div>
+        {loading ? (
+          <p className="py-8 text-center text-sm text-gray-400">加载中...</p>
+        ) : error ? (
+          <div className="rounded-lg bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</div>
+        ) : profile ? (
+          <div className="space-y-4">
+            {/* 学习风格 */}
+            <div>
+              <h4 className="mb-1 text-sm font-medium text-gray-700">学习风格</h4>
+              {profile.style_profile ? (
+                <p className="rounded-lg bg-gray-50 px-4 py-3 text-sm text-gray-600">{profile.style_profile}</p>
+              ) : (
+                <p className="text-sm text-gray-400">暂无画像数据</p>
+              )}
+            </div>
+
+            {/* 薄弱知识点 */}
+            <div>
+              <h4 className="mb-1 text-sm font-medium text-gray-700">薄弱知识点</h4>
+              {profile.weak_kps.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {profile.weak_kps.map((kp) => (
+                    <span
+                      key={kp.kp_id}
+                      className="inline-flex items-center gap-1 rounded-lg bg-red-50 px-3 py-1 text-xs text-red-600"
+                    >
+                      {kp.kp_id}
+                      <span className="text-red-400">掌握{Math.round(kp.rate * 100)}%</span>
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-400">暂无薄弱知识点</p>
+              )}
+            </div>
+
+            {/* 最近考试 */}
+            {profile.recent_exam && (
+              <div>
+                <h4 className="mb-1 text-sm font-medium text-gray-700">最近考试</h4>
+                <p className="text-sm text-gray-600">
+                  {profile.recent_exam.date} {profile.recent_exam.subject}：
+                  {profile.recent_exam.score}/{profile.recent_exam.total}分
+                </p>
+              </div>
+            )}
+
+            {/* 错题统计 */}
+            <div>
+              <h4 className="mb-1 text-sm font-medium text-gray-700">错题统计</h4>
+              <div className="flex gap-4">
+                <span className="text-sm text-gray-600">
+                  总错题 <span className="font-semibold text-gray-900">{profile.wrong_stats.total}</span> 题
+                </span>
+                <span className="text-sm text-gray-600">
+                  未掌握 <span className="font-semibold text-red-500">{profile.wrong_stats.unmastered}</span> 题
+                </span>
+              </div>
+              {profile.wrong_stats.hot_wrong_kps.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {profile.wrong_stats.hot_wrong_kps.map((kp) => (
+                    <span
+                      key={kp.kp_id}
+                      className="rounded bg-amber-50 px-2 py-0.5 text-xs text-amber-600"
+                    >
+                      {kp.kp_id}（错 {kp.wrong_count} 次）
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
