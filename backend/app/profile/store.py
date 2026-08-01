@@ -366,8 +366,8 @@ def get_admin_student_profile(db, user_id: int) -> dict:
         (user_id,),
     )
     stat = cursor.fetchone()
-    total_wrong = int(stat["total"]) if stat else 0
-    unmastered = int(stat["unmastered"]) if stat else 0
+    total_wrong = int(stat["total"] or 0) if stat else 0
+    unmastered = int(stat["unmastered"] or 0) if stat else 0
 
     # 高频错题知识点 Top3
     cursor = db.execute(
