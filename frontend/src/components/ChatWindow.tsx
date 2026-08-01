@@ -130,7 +130,7 @@ export function ChatWindow({
                     <KbRefsCard refs={streamingKbRefs} />
                   )}
                   {streamingContent ? (
-                    <div className="prose prose-sm max-w-none prose-headings:mb-2 prose-headings:mt-3 prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-code:rounded prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:text-sm">
+                    <div className="prose prose-chat max-w-none">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>
                         {streamingContent}
                       </ReactMarkdown>
@@ -200,7 +200,7 @@ function MessageBubble({
           ) : (
             <>
               {kbRefs && kbRefs.length > 0 && <KbRefsCard refs={kbRefs} />}
-              <div className="prose prose-sm max-w-none prose-headings:mb-2 prose-headings:mt-3 prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-code:rounded prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:text-sm prose-code:before:content-none prose-code:after:content-none">
+              <div className="prose prose-chat max-w-none">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
                   {message.content}
                 </ReactMarkdown>

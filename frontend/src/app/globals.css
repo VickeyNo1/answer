@@ -25,3 +25,77 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* ===== AI 回答排版优化（中文友好） ===== */
+.prose-chat {
+  font-size: 0.9375rem;       /* 15px，比 prose-sm(14px) 大，比 prose-base(16px) 略小 */
+  line-height: 1.8;           /* 中文需要更大行高 */
+}
+.prose-chat :where(h1, h2, h3, h4) {
+  margin-top: 1.2em;
+  margin-bottom: 0.5em;
+  font-weight: 700;
+}
+.prose-chat :where(p) {
+  margin-top: 0.6em;
+  margin-bottom: 0.6em;
+}
+.prose-chat :where(ul, ol) {
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+  padding-left: 1.5em;
+}
+.prose-chat :where(li) {
+  margin-top: 0.25em;
+  margin-bottom: 0.25em;
+}
+.prose-chat :where(strong) {
+  font-weight: 700;
+  color: #1a1a1a;
+}
+.prose-chat :where(pre) {
+  margin-top: 0.8em;
+  margin-bottom: 0.8em;
+  padding: 1em 1.2em;
+  border-radius: 0.5rem;
+  background: #1e293b;        /* 深蓝灰底 */
+  color: #e2e8f0;             /* 浅灰白字 */
+  font-size: 0.875rem;
+  line-height: 1.7;
+  overflow-x: auto;
+}
+.prose-chat :where(pre code) {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+  color: inherit;
+}
+.prose-chat :where(code:not(pre code)) {
+  background: #f1f5f9;
+  padding: 0.15em 0.4em;
+  border-radius: 0.25rem;
+  font-size: 0.85em;
+  color: #c7254e;
+}
+.prose-chat :where(blockquote) {
+  border-left: 3px solid #3b82f6;
+  padding-left: 1em;
+  margin: 0.8em 0;
+  color: #475569;
+}
+.prose-chat :where(table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  font-size: 0.875rem;
+}
+.prose-chat :where(th, td) {
+  border: 1px solid #e2e8f0;
+  padding: 0.5em 0.75em;
+  text-align: left;
+}
+.prose-chat :where(th) {
+  background: #f8fafc;
+  font-weight: 600;
+}
