@@ -5,7 +5,6 @@
 """
 import logging
 
-from app.config import get_settings
 from app.database import get_db_ctx
 from app.llm import store as llm_store
 
@@ -29,22 +28,19 @@ def build_summary_prompt(history: list[dict]) -> str:
 
 def _call_llm(model: str, prompt: str) -> tuple[str, int, int]:
     """同步调用大模型，返回 (文本, input_tokens, output_tokens)；失败抛异常"""
-    import dashscope
-    from dashscope import Generation
-    dashscope.api_key = get_settings().DASHSCOPE_API_KEY
-    response = Generation.call(
+    from app.llm.client import create_client
+    client = create_client()
+    response = client.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": PROFILE_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
-        result_format="message",
+        extra_body={"enable_thinking": False},
     )
-    if response.status_code != 200:
-        raise RuntimeError(f"模型调用失败: {response.code} - {response.message}")
-    content = response.output["choices"][0]["message"].get("content") or ""
-    usage = getattr(response, "usage", None) or {}
-    return content, int(usage.get("input_tokens") or 0), int(usage.get("output_tokens") or 0)
+    content = response.choices[0].message.content or ""
+    usage = response.usage
+    return content, (usage.prompt_tokens if usage else 0), (usage.completion_tokens if usage else 0)
 
 
 def summarize_profile(user_id: int) -> None:

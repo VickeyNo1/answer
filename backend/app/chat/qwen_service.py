@@ -1,5 +1,7 @@
 """通义千问流式调用封装：Function Calling 两轮流程 + SSE 流式输出
 
+使用百炼 OpenAI 兼容端点（app/llm/client.py），统一支持所有模型。
+
 第 1 轮带 search_cpa_knowledge 工具调用大模型：
 - 模型直答 → 内容增量直接透传
 - 模型决定检索（finish_reason=tool_calls）→ 调知识库 → 组装 tool 结果
@@ -7,9 +9,9 @@
 subject 由后端从会话上下文注入，模型只决定 query/collection/top_k。
 """
 import json
-import dashscope
-from dashscope import Generation
+
 from app.config import get_settings
+from app.llm.client import create_client
 from app.kb import client as kb_client
 from app.kb.prompt import SEARCH_TOOL, format_results, collect_kp_ids
 
@@ -78,59 +80,54 @@ def stream_chat(
     user_id/conversation_id 仅用于 kb_search_logs 落库。
     """
     settings = get_settings()
-    dashscope.api_key = settings.DASHSCOPE_API_KEY
     model = model_name or settings.CHAT_MODEL
     usage_acc = {"prompt_tokens": 0, "completion_tokens": 0}
 
     try:
+        client = create_client()
+
         # ===== 第 1 轮：带工具流式调用 =====
-        responses = Generation.call(
+        stream = client.chat.completions.create(
             model=model,
             messages=messages,
             tools=[SEARCH_TOOL],
-            result_format="message",
             stream=True,
-            incremental_output=True,
+            extra_body={"enable_thinking": False},
         )
 
         tool_calls: dict[int, dict] = {}  # index -> {id, name, arguments}
         finish_reason = None
         round_usage = {"in": 0, "out": 0}
 
-        for response in responses:
-            if response.status_code != 200:
-                yield {"error": f"AI 模型调用失败: {response.code} - {response.message}"}
-                return
-
-            _track_usage(response, round_usage)
-
-            choices = response.output.get("choices", [])
-            if not choices:
+        for chunk in stream:
+            if not chunk.choices:
+                _track_usage(chunk, round_usage)
                 continue
-            choice = choices[0]
-            message = choice.get("message", {})
+            choice = chunk.choices[0]
+            delta = choice.delta
 
             # 内容增量直接透传
-            delta = message.get("content", "")
-            if delta:
-                yield {"content": delta}
+            if delta and delta.content:
+                yield {"content": delta.content}
 
             # 累积 tool_calls 分片（arguments 按 index 拼接）
-            for tc in message.get("tool_calls") or []:
-                idx = tc.get("index", 0)
-                slot = tool_calls.setdefault(
-                    idx, {"id": "", "name": "", "arguments": ""}
-                )
-                if tc.get("id"):
-                    slot["id"] = tc["id"]
-                fn = tc.get("function", {})
-                if fn.get("name"):
-                    slot["name"] = fn["name"]
-                if fn.get("arguments"):
-                    slot["arguments"] += fn["arguments"]
+            if delta and delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    slot = tool_calls.setdefault(
+                        idx, {"id": "", "name": "", "arguments": ""}
+                    )
+                    if tc.id:
+                        slot["id"] = tc.id
+                    if tc.function:
+                        if tc.function.name:
+                            slot["name"] = tc.function.name
+                        if tc.function.arguments:
+                            slot["arguments"] += tc.function.arguments
 
-            if choice.get("finish_reason") and choice["finish_reason"] != "null":
-                finish_reason = choice["finish_reason"]
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
+            _track_usage(chunk, round_usage)
 
         # 第 1 轮用量计入总量
         usage_acc["prompt_tokens"] += round_usage["in"]
@@ -208,18 +205,16 @@ def stream_chat(
             },
             {
                 "role": "tool",
-                "name": call["name"] or "search_cpa_knowledge",
                 "tool_call_id": call["id"] or "call_0",
                 "content": tool_result,
             },
         ]
 
-        responses = Generation.call(
+        stream = client.chat.completions.create(
             model=model,
             messages=second_messages,
-            result_format="message",
             stream=True,
-            incremental_output=True,
+            extra_body={"enable_thinking": False},
         )
 
         round_usage = {"in": 0, "out": 0}
@@ -230,23 +225,19 @@ def stream_chat(
         # 分隔行可能跨块到达，保留足够尾部再下发
         keep_len = len(SUGGESTIONS_DELIMITER) + 2
 
-        for response in responses:
-            if response.status_code != 200:
-                yield {"error": f"AI 模型调用失败: {response.code} - {response.message}"}
-                return
-
-            _track_usage(response, round_usage)
-
-            choices = response.output.get("choices", [])
-            if not choices:
+        for chunk in stream:
+            if not chunk.choices:
+                _track_usage(chunk, round_usage)
                 continue
-            delta = choices[0].get("message", {}).get("content", "")
-            if not delta:
+            delta = chunk.choices[0].delta
+            content = delta.content if delta else None
+            if not content:
+                _track_usage(chunk, round_usage)
                 continue
             if collecting_suggestions:
-                suggestions_text += delta
+                suggestions_text += content
                 continue
-            holdback += delta
+            holdback += content
             if SUGGESTIONS_DELIMITER in holdback:
                 before, after = holdback.split(SUGGESTIONS_DELIMITER, 1)
                 before = before.rstrip()
@@ -258,6 +249,7 @@ def stream_chat(
             elif len(holdback) > keep_len:
                 yield {"content": holdback[:-keep_len]}
                 holdback = holdback[-keep_len:]
+            _track_usage(chunk, round_usage)
 
         # 刷库存尾部正文 + 附降级话术
         if not collecting_suggestions and holdback:
@@ -295,14 +287,12 @@ def _parse_suggestions(text: str) -> list[str]:
     return [str(item) for item in items if str(item).strip()][:3]
 
 
-def _track_usage(response, round_usage: dict) -> None:
-    """记录单轮最新的累计 usage（流式每块携带本轮累计值，取最新即本轮总量）"""
-    usage = getattr(response, "usage", None)
+def _track_usage(chunk, round_usage: dict) -> None:
+    """记录流式 chunk 的 usage（OpenAI 兼容模式最后一块携带累计值）"""
+    usage = getattr(chunk, "usage", None)
     if not usage:
         return
-    input_tokens = usage.get("input_tokens")
-    output_tokens = usage.get("output_tokens")
-    if input_tokens is not None:
-        round_usage["in"] = input_tokens
-    if output_tokens is not None:
-        round_usage["out"] = output_tokens
+    if getattr(usage, "prompt_tokens", None) is not None:
+        round_usage["in"] = usage.prompt_tokens
+    if getattr(usage, "completion_tokens", None) is not None:
+        round_usage["out"] = usage.completion_tokens

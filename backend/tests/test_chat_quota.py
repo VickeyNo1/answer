@@ -16,27 +16,52 @@ from app.auth.jwt_handler import create_access_token
 from app.chat import concurrency
 
 
-class FakeResponse:
-    """模拟 dashscope 流式响应块（防御用：配额/锁被拒时不应走到模型调用）"""
+class FakeDelta:
+    def __init__(self, content=None, tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls
 
-    def __init__(self, content="", finish_reason=None, usage=None):
-        self.status_code = 200
-        self.code = ""
-        self.message = ""
+
+class FakeChoice:
+    def __init__(self, delta=None, finish_reason=None):
+        self.delta = delta or FakeDelta()
+        self.finish_reason = finish_reason
+
+
+class FakeUsage:
+    def __init__(self, prompt_tokens=0, completion_tokens=0):
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+
+
+class FakeChunk:
+    """模拟 OpenAI 流式 chunk（防御用：配额/锁被拒时不应走到模型调用）"""
+    def __init__(self, content=None, finish_reason=None, usage=None):
+        delta = FakeDelta(content=content)
+        self.choices = [FakeChoice(delta=delta, finish_reason=finish_reason)]
         self.usage = usage
-        self.output = {"choices": [{
-            "message": {"content": content} if content else {},
-            "finish_reason": finish_reason,
-        }]}
+
+
+class FakeCompletions:
+    def create(self, **kwargs):
+        return iter([FakeChunk(content="好的。", finish_reason="stop",
+                               usage=FakeUsage(prompt_tokens=1, completion_tokens=1))])
+
+
+class FakeChat:
+    def __init__(self):
+        self.completions = FakeCompletions()
+
+
+class FakeClient:
+    def __init__(self):
+        self.chat = FakeChat()
 
 
 @pytest.fixture(autouse=True)
 def _mock_llm(monkeypatch):
-    def fake_call(*args, **kwargs):
-        yield FakeResponse(content="好的。", finish_reason="stop",
-                           usage={"input_tokens": 1, "output_tokens": 1})
     monkeypatch.setattr(
-        "app.chat.qwen_service.Generation.call", staticmethod(fake_call)
+        "app.chat.qwen_service.create_client", lambda: FakeClient()
     )
 
 
