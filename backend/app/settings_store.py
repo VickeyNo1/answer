@@ -66,17 +66,17 @@ def get_all() -> dict:
 
 
 def update_settings(db, updates: dict[str, int]) -> None:
-    """部分更新设置（值转字符串落库；UPDATE 保 ON UPDATE 生效），完成后刷新缓存"""
+    """部分更新设置（值转字符串落库），完成后刷新缓存
+
+    使用 INSERT ... ON DUPLICATE KEY UPDATE（原子 upsert），
+    避免 UPDATE rowcount=0 时兜底 INSERT 撞唯一键的竞态问题。
+    """
     for key, value in updates.items():
-        cursor = db.execute(
-            "UPDATE app_settings SET setting_value = %s WHERE setting_key = %s",
-            (str(int(value)), key),
+        db.execute(
+            """INSERT INTO app_settings (setting_key, setting_value)
+               VALUES (%s, %s)
+               ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)""",
+            (key, str(int(value))),
         )
-        if cursor.rowcount == 0:
-            # 键缺失（如 seed 未跑）时兜底插入，保证 PUT 语义完整
-            db.execute(
-                "INSERT INTO app_settings (setting_key, setting_value) VALUES (%s, %s)",
-                (key, str(int(value))),
-            )
     db.commit()
     load_settings()
