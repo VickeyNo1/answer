@@ -122,6 +122,11 @@ def create_exam(db, user_id: int, subject: str, chapter_ids: list[str] | None,
     抽题失败抛 KbDrawError（路由转 502），无可用题目抛 ExamNoQuestion（转 400）。
     """
     exam_id = _reserve_exam(db, user_id, subject, chapter_ids)
+    # 过滤数量为 0 的题型（知识库要求每种题型数量为正整数）
+    counts = {k: v for k, v in counts.items() if v and int(v) > 0}
+    if not counts:
+        _drop_exam(db, exam_id)
+        raise ExamNoQuestion("请至少选择一种题型的数量大于 0")
     try:
         questions = kb_client.draw_exam(subject, chapter_ids or None, counts)
     except Exception:
