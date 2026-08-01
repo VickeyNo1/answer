@@ -253,26 +253,44 @@ export default function ExamPage() {
                 )}
                 {q.options ? (
                   <div className="space-y-2">
-                    {Object.entries(q.options).map(([key, val]) => (
-                      <label
-                        key={key}
-                        className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors ${
-                          answers[q.seq] === key
-                            ? "border-blue-500 bg-blue-50 text-blue-700"
-                            : "border-gray-200 hover:bg-gray-50"
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name={`q-${q.seq}`}
-                          checked={answers[q.seq] === key}
-                          onChange={() => handleAnswerChange(q.seq, key)}
-                          className="h-4 w-4 text-blue-600"
-                        />
-                        <span className="font-medium">{key}.</span>
-                        <span className="text-gray-700">{val}</span>
-                      </label>
-                    ))}
+                    {Object.entries(q.options).map(([key, val]) => {
+                      const isMulti = q.question_type === "多选";
+                      const selected = isMulti
+                        ? (answers[q.seq] || "").includes(key)
+                        : answers[q.seq] === key;
+                      const handlePick = () => {
+                        if (isMulti) {
+                          // 多选：切换选中状态，答案按字母排序拼接（如 "ACD"）
+                          const cur = answers[q.seq] || "";
+                          const next = cur.includes(key)
+                            ? cur.replace(key, "")
+                            : (cur + key).split("").sort().join("");
+                          handleAnswerChange(q.seq, next);
+                        } else {
+                          handleAnswerChange(q.seq, key);
+                        }
+                      };
+                      return (
+                        <label
+                          key={key}
+                          className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors ${
+                            selected
+                              ? "border-blue-500 bg-blue-50 text-blue-700"
+                              : "border-gray-200 hover:bg-gray-50"
+                          }`}
+                        >
+                          <input
+                            type={isMulti ? "checkbox" : "radio"}
+                            name={`q-${q.seq}`}
+                            checked={selected}
+                            onChange={handlePick}
+                            className="h-4 w-4 text-blue-600"
+                          />
+                          <span className="font-medium">{key}.</span>
+                          <span className="text-gray-700">{val}</span>
+                        </label>
+                      );
+                    })}
                   </div>
                 ) : (
                   <textarea
