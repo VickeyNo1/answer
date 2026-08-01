@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:3000"
 
     # 对话模型
-    CHAT_MODEL: str = "qwen3.6-flash"
+    CHAT_MODEL: str = "qwen3.7-flash"
 
     @property
     def cors_origins_list(self) -> list[str]:

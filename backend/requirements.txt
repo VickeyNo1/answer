@@ -10,7 +10,7 @@ passlib[bcrypt]==1.7.*
 python-multipart==0.0.*
 
 # AI 模型
-dashscope==1.20.*
+dashscope>=1.20.0
 
 # 数据库（机器A MySQL 8.4）
 pymysql==1.1.*
