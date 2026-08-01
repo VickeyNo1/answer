@@ -50,17 +50,19 @@ class TestExamCreate:
         assert "explanation" not in question
         assert "解析" not in resp.text
 
-    def test_create_ongoing_unique_409(self, client, student_headers, fake_draw):
-        """已有未完成试卷时重复创建 → 409，提示中带该试卷 id"""
+    def test_create_cancels_previous_ongoing(self, client, student_headers, fake_draw):
+        """已有未完成试卷时重新创建 → 旧卷自动作废，新卷正常 201"""
         fake_draw([make_question("Q-1")])
         first = client.post("/api/exams", json={"counts": {"单选": 1}},
                             headers=student_headers)
         assert first.status_code == 201
+        first_id = first.json()["id"]
 
+        fake_draw([make_question("Q-2")])
         resp = client.post("/api/exams", json={"counts": {"单选": 1}},
                            headers=student_headers)
-        assert resp.status_code == 409
-        assert str(first.json()["id"]) in resp.json()["detail"]
+        assert resp.status_code == 201
+        assert resp.json()["id"] != first_id
 
     def test_create_subject_fallback(self, client, student_headers, fake_draw):
         """非法 subject 回退默认科目 cpa_acc"""

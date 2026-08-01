@@ -86,15 +86,13 @@ def load_snapshot(row: dict) -> dict:
 
 def _reserve_exam(db, user_id: int, subject: str,
                   chapter_ids: list[str] | None) -> int:
-    """锁内校验 ongoing 唯一并插入占位试卷行，返回 exam_id"""
+    """锁内作废旧 ongoing 并插入占位试卷行，返回 exam_id"""
     with _create_lock:
-        cursor = db.execute(
-            "SELECT id FROM exams WHERE user_id = %s AND status = 'ongoing' LIMIT 1",
+        # 自动作废之前未完成的试卷（允许用户重新组卷）
+        db.execute(
+            "UPDATE exams SET status = 'cancelled' WHERE user_id = %s AND status = 'ongoing'",
             (user_id,),
         )
-        row = cursor.fetchone()
-        if row:
-            raise ExamOngoingExists(row["id"])
         cursor = db.execute(
             """INSERT INTO exams (user_id, subject, chapter_ids, status,
                                   question_count, total_score)
