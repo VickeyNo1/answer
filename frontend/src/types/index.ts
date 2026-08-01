@@ -284,13 +284,22 @@ export type SSEEvent =
 
 // ========== v4.0 M2：考试相关 ==========
 
+/** 知识库返回的子题结构（对象或纯字符串） */
+export type SubQuestion = string | {
+  id: string;
+  question: string;
+  answer?: string;
+  explanation?: string;
+  knowledge_point_ids?: string[];
+};
+
 export interface ExamQuestionOut {
   seq: number;
   question_type: string;
   stem: string | null;
   options: Record<string, string> | null;
   materials: string | null;
-  sub_questions: string[] | null;
+  sub_questions: SubQuestion[] | null;
   full_score: number;
 }
 
@@ -332,7 +341,7 @@ export interface ExamAnswerDetail {
   stem: string | null;
   options: Record<string, string> | null;
   materials: string | null;
-  sub_questions: string[] | null;
+  sub_questions: SubQuestion[] | null;
   my_answer: string | null;
   correct_answer: string | null;
   explanation: string | null;
@@ -406,7 +415,7 @@ export interface WrongQuestionListItem {
   stem: string | null;
   options: Record<string, string> | null;
   materials: string | null;
-  sub_questions: string[] | null;
+  sub_questions: SubQuestion[] | null;
   wrong_count: number;
   mastered: number;
   last_wrong_at: string;
