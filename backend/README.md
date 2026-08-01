@@ -171,7 +171,7 @@ MAX_FILE_SIZE_MB=10
 CORS_ORIGINS=http://localhost:3000
 
 # 对话模型名称 (DashScope 模型)
-CHAT_MODEL=qwen-plus
+CHAT_MODEL=qwen3.6-flash
 ```
 
 ## 端口规划

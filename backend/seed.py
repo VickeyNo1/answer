@@ -16,9 +16,9 @@ ADMIN_NAME = "管理员"
 # 默认大模型配置：(provider, model_name, display_name, price_in, price_out, is_active)
 # 单价单位：元/千 token（默认值仅供参考，管理员可在管理页调整）
 DEFAULT_MODELS = [
-    ("ali", "qwen3.7-flash", "通义千问 3.7 Flash", 0.0008, 0.002, 1),
-    ("ali", "qwen-plus", "通义千问 Plus", 0.0008, 0.002, 0),
-    ("ali", "qwen-max", "通义千问 Max", 0.0024, 0.0096, 0),
+    ("ali", "qwen3.6-flash", "通义千问 3.6 Flash", 0.0008, 0.002, 1),
+    ("ali", "qwen3.7-plus", "通义千问 3.7 Plus", 0.0008, 0.002, 0),
+    ("ali", "qwen3.7-max", "通义千问 3.7 Max", 0.0024, 0.0096, 0),
     ("deepseek", "deepseek-v3", "DeepSeek V3", 0.002, 0.008, 0),
     ("deepseek", "deepseek-r1", "DeepSeek R1", 0.004, 0.016, 0),
 ]
@@ -44,6 +44,39 @@ def _seed_admin(db) -> None:
     print(f"  学号: {ADMIN_STUDENT_ID}")
     print(f"  密码: {ADMIN_PASSWORD}")
     print("请妥善保管密码，首次登录后建议修改。")
+
+
+# 模型名迁移映射：旧名 → (新名, 新显示名)
+_MODEL_RENAME = {
+    "qwen3.7-flash": ("qwen3.6-flash", "通义千问 3.6 Flash"),
+    "qwen-plus": ("qwen3.7-plus", "通义千问 3.7 Plus"),
+    "qwen-max": ("qwen3.7-max", "通义千问 3.7 Max"),
+}
+
+
+def _migrate_model_names(db) -> None:
+    """将旧模型名原地更新为百炼当前有效名（幂等）"""
+    renamed = 0
+    for old_name, (new_name, new_display) in _MODEL_RENAME.items():
+        cursor = db.execute(
+            "SELECT id FROM model_configs WHERE model_name = %s", (old_name,)
+        )
+        if cursor.fetchone() is None:
+            continue
+        # 若新名已存在则删旧行，否则原地改名
+        cur2 = db.execute(
+            "SELECT id FROM model_configs WHERE model_name = %s", (new_name,)
+        )
+        if cur2.fetchone() is not None:
+            db.execute("DELETE FROM model_configs WHERE model_name = %s", (old_name,))
+        else:
+            db.execute(
+                "UPDATE model_configs SET model_name = %s, display_name = %s WHERE model_name = %s",
+                (new_name, new_display, old_name),
+            )
+        renamed += 1
+    if renamed:
+        print(f"模型名迁移完成：{renamed} 条旧名已更新")
 
 
 def _seed_models(db) -> None:
@@ -94,6 +127,7 @@ def seed():
 
     with get_db_ctx() as db:
         _seed_admin(db)
+        _migrate_model_names(db)
         _seed_models(db)
         _seed_settings(db)
         db.commit()

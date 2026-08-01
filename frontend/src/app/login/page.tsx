@@ -93,9 +93,7 @@ export default function LoginPage() {
           </button>
         </form>
 
-        <p className="mt-4 text-center text-xs text-gray-400">
-          管理员账号: admin / admin123
-        </p>
+
       </div>
     </div>
   );
