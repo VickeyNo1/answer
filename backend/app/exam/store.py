@@ -136,10 +136,18 @@ def create_exam(db, user_id: int, subject: str, chapter_ids: list[str] | None,
     seq = 0
     total_score = 0.0
     questions_out: list[dict] = []
+    # 知识库返回英文题型名，映射为系统内中文枚举
+    _TYPE_MAP = {
+        "single_choice": "单选",
+        "multiple_choice": "多选",
+        "calculation": "计算",
+        "comprehensive": "综合",
+    }
     for q in questions:
         if not isinstance(q, dict):
             continue
-        qtype = (q.get("question_type") or "").strip()
+        raw_type = (q.get("question_type") or "").strip()
+        qtype = _TYPE_MAP.get(raw_type, raw_type)  # 已是中文则原样保留
         qid = (q.get("question_id") or "").strip()
         if qtype not in judger.FULL_SCORES or not qid:
             logger.warning("跳过不合规题目 exam_id=%s question_id=%r type=%r",
@@ -148,6 +156,7 @@ def create_exam(db, user_id: int, subject: str, chapter_ids: list[str] | None,
         seq += 1
         full = judger.FULL_SCORES[qtype]
         total_score += full
+        q["question_type"] = qtype  # 快照统一存中文题型名
         db.execute(
             """INSERT INTO exam_answers
                (exam_id, seq, question_id, question_type, question_snapshot, full_score)
