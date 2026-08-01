@@ -361,7 +361,7 @@ class WrongQuestionListItem(BaseModel):
     stem: str | None = None
     options: dict | None = None
     materials: str | None = None
-    sub_questions: list[str] | None = None
+    sub_questions: list | None = None
     wrong_count: int
     mastered: int
     last_wrong_at: str
