@@ -192,10 +192,12 @@ export default function WrongQuestionsPage() {
                 {item.stem && (
                   <p className="mb-2 text-sm text-gray-900">{item.stem}</p>
                 )}
-                {item.sub_questions && (
+                {item.sub_questions && item.sub_questions.length > 0 && (
                   <ol className="mb-2 list-inside list-decimal space-y-1 text-sm text-gray-700">
                     {item.sub_questions.map((sq, i) => (
-                      <li key={i}>{sq}</li>
+                      <li key={i} className="whitespace-pre-wrap">
+                        {typeof sq === "string" ? sq : sq.question || JSON.stringify(sq)}
+                      </li>
                     ))}
                   </ol>
                 )}
