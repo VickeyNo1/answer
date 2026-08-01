@@ -242,9 +242,13 @@ export default function ExamPage() {
                   <pre className="mb-3 whitespace-pre-wrap rounded-lg bg-gray-50 p-3 text-sm text-gray-700">{q.materials}</pre>
                 )}
                 {q.stem && <p className="mb-3 text-sm text-gray-900">{q.stem}</p>}
-                {q.sub_questions && (
+                {q.sub_questions && q.sub_questions.length > 0 && (
                   <ol className="mb-3 list-inside list-decimal space-y-1 text-sm text-gray-700">
-                    {q.sub_questions.map((sq, i) => <li key={i}>{sq}</li>)}
+                    {q.sub_questions.map((sq, i) => (
+                      <li key={i} className="whitespace-pre-wrap">
+                        {typeof sq === "string" ? sq : sq.question || JSON.stringify(sq)}
+                      </li>
+                    ))}
                   </ol>
                 )}
                 {q.options ? (
