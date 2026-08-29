@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     # 对话模型
     CHAT_MODEL: str = "qwen3.7-flash"
 
+    # 视觉（OCR）模型：图片题目识别用，可通过 .env 覆盖
+    VISION_MODEL: str = "qwen-vl-max"
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]

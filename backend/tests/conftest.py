@@ -78,11 +78,11 @@ def _drop_test_db():
         conn.close()
 
 
-@pytest.fixture(scope="session", autouse=True)
-def setup_database():
-    """会话级：重建测试库 + 建表 + 创建 admin 和 student 账号
+@pytest.fixture(scope="session")
+def db_ready():
+    """懒加载：首次需要 DB 的测试才建库（不可达时报错跳过）
 
-    MySQL 不可达时整体 skip。
+    纯函数测试不依赖本 fixture，因此 MySQL 不可达时仍可运行。
     """
     if not MYSQL_OK:
         pytest.skip("MySQL 不可达，跳过需要数据库的测试")
@@ -117,12 +117,12 @@ def setup_database():
 
     yield
 
-    # 会话结束后清理测试库
+    # 会话结束后清理测试库（仅在真正建过库时）
     _drop_test_db()
 
 
 @pytest.fixture(scope="session")
-def client(setup_database):
+def client(db_ready):
     """FastAPI 测试客户端"""
     with TestClient(app) as c:
         yield c
@@ -204,7 +204,7 @@ def fake_draw(monkeypatch):
 
 
 @pytest.fixture
-def clean_exams():
+def clean_exams(db_ready):
     """考试测试隔离：用例前后清空考试数据（「每人仅 1 张 ongoing」会互相干扰）"""
     def _clear():
         with get_db_ctx() as db:
@@ -279,7 +279,7 @@ def make_wrong_question(user_id: int, question_id: str = "Q-001",
 
 
 @pytest.fixture
-def clean_profile():
+def clean_profile(db_ready):
     """学生记忆测试隔离：用例前后清空错题本、画像、反馈、对话"""
     def _clear():
         with get_db_ctx() as db:

@@ -38,6 +38,30 @@ SUGGESTIONS_INSTRUCTION = (
 DEGRADED_SUFFIX = "\n\n> ⚠️ 知识库暂时不可用，本回答未经教材核对。"
 EMPTY_SUFFIX = "\n\n> 知识库中未检索到直接相关内容。"
 
+# 图片题目识别（方案 B）：仅转录，不解答；模型由 VISION_MODEL 配置
+OCR_USER_PROMPT = (
+    "请完整、准确地识别并转录图片中的会计题目文字，包括题干、选项、材料、要求等，"
+    "保持原有结构与格式，只输出转录文本，不要解答、不要额外解释。"
+)
+
+
+def extract_question_text(image_base64: str, model_name: str | None = None) -> str:
+    """单次非流式视觉调用，识别图片中的题目文字（方案 B OCR 步骤）"""
+    settings = get_settings()
+    model = model_name or settings.VISION_MODEL
+    client = create_client()
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "user", "content": [
+                {"type": "text", "text": OCR_USER_PROMPT},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}},
+            ]},
+        ],
+        extra_body={"enable_thinking": False},
+    )
+    return (resp.choices[0].message.content or "").strip()
+
 
 def build_messages(user_message: str, history: list[dict],
                    memory_block: str | None = None) -> list[dict]:
