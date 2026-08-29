@@ -49,3 +49,34 @@ def test_extract_question_text_returns_content(monkeypatch):
     user_content = kw["messages"][-1]["content"]
     assert isinstance(user_content, list)
     assert any(c.get("type") == "image_url" for c in user_content)
+
+
+def test_chat_with_image_emits_ocr_and_stores_combined(client, student_headers, monkeypatch):
+    from app.chat import qwen_service
+    from app.database import get_db_ctx
+    monkeypatch.setattr(qwen_service, "extract_question_text", lambda b64: "识别出的题目")
+    monkeypatch.setattr(qwen_service, "create_client",
+                        lambda: FakeClient(lambda: [_Chunk("答案。", finish="stop")]))
+    resp = client.post("/api/chat", json={
+        "conversation_id": None, "message": "请解答", "subject": "cpa_acc",
+        "image_base64": "QUJD",
+    }, headers=student_headers)
+    assert resp.status_code == 200
+    assert '"type": "ocr"' in resp.text
+    with get_db_ctx() as db:
+        row = db.execute(
+            "SELECT content FROM messages WHERE role='user' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert row["content"] == "请解答\n\n【图片识别内容】\n识别出的题目"
+
+
+def test_chat_image_ocr_empty_errors(client, student_headers, monkeypatch):
+    from app.chat import qwen_service
+    monkeypatch.setattr(qwen_service, "extract_question_text", lambda b64: "")
+    resp = client.post("/api/chat", json={
+        "conversation_id": None, "message": "", "subject": "cpa_acc",
+        "image_base64": "QUJD",
+    }, headers=student_headers)
+    assert resp.status_code == 200
+    assert '"type": "error"' in resp.text
+    assert '"type": "delta"' not in resp.text

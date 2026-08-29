@@ -52,6 +52,8 @@ class ChatRequest(BaseModel):
     conversation_id: int | None = None
     message: str
     subject: str | None = None
+    # 图片题目（纯 base64，不含 data: 前缀）；非空时先 OCR 再进入答疑流程（方案 B）
+    image_base64: str | None = None
 
 
 # ========== 反馈相关（v4.0 M1） ==========

@@ -13,7 +13,7 @@ from app.models import (
 )
 from app.chat import concurrency
 from app.chat.memory import get_conversation_history
-from app.chat.qwen_service import build_messages, stream_chat
+from app.chat.qwen_service import build_messages, extract_question_text, stream_chat
 from app.admin.entitlements import get_effective_limit
 from app.kb.subjects import is_valid_subject, DEFAULT_SUBJECT
 from app.llm import store as llm_store
@@ -32,7 +32,8 @@ async def chat(
     """SSE 流式对话：大模型 Function Calling 自主决定是否检索知识库
 
     v4.0 链路（设计文档 §3.3）：配额校验 → 单人串行 → 并发闸门（有限排队）
-    → 流式生成（queue/kb_search/kb_refs/kp_ids/delta/suggestions/done）
+    → 流式生成（queue/ocr/kb_search/kb_refs/kp_ids/delta/suggestions/done）
+    带图片时先视觉 OCR 识别题目，识别文本与用户文字组合后走同一管线（方案 B）。
     """
     user_id = current_user["id"]
 
@@ -72,13 +73,30 @@ async def chat(
                 detail="当前提问人数较多，请稍后再试",
             )
 
+        # 3.5 图片 OCR（方案 B）：识别题目文字；失败不抛异常，转 SSE error
+        ocr_text = None
+        ocr_error = None
+        if req.image_base64:
+            try:
+                ocr_text = (extract_question_text(req.image_base64) or "").strip()
+                if not ocr_text:
+                    ocr_error = "未从图片中识别到题目文字，请重拍或改用文字提问"
+            except Exception as e:
+                ocr_error = f"图片识别失败，请稍后再试（{e}）"
+        effective_message = req.message
+        if ocr_text:
+            effective_message = (
+                f"{req.message}\n\n【图片识别内容】\n{ocr_text}"
+                if req.message.strip() else ocr_text
+            )
+
         # 4. 确定对话 ID（null 则自动新建）
         conversation_id = req.conversation_id
         if conversation_id is None:
             with get_db_ctx() as db:
                 cursor = db.execute(
                     "INSERT INTO conversations (user_id, title, subject) VALUES (%s, %s, %s)",
-                    (user_id, req.message[:30] if req.message else "新对话", subject),
+                    (user_id, effective_message[:30] if effective_message else "新对话", subject),
                 )
                 db.commit()
                 conversation_id = cursor.lastrowid
@@ -91,18 +109,18 @@ async def chat(
                 )
                 db.commit()
 
-        # 5. 保存用户消息
+        # 5. 保存用户消息（带图时存组合后的识别文本，图片本身不落库）
         with get_db_ctx() as db:
             db.execute(
                 "INSERT INTO messages (conversation_id, role, content) VALUES (%s, %s, %s)",
-                (conversation_id, "user", req.message),
+                (conversation_id, "user", effective_message),
             )
             db.commit()
 
         # 6. 构建消息列表（M3：注入记忆块）
         history = get_conversation_history(conversation_id, limit=10)
         # 排除刚存入的当前用户消息（因为还没得到回复）
-        if history and history[-1]["role"] == "user" and history[-1]["content"] == req.message:
+        if history and history[-1]["role"] == "user" and history[-1]["content"] == effective_message:
             history = history[:-1]
 
         memory_block = None
@@ -113,7 +131,7 @@ async def chat(
         except Exception:
             pass
 
-        messages = build_messages(req.message, history, memory_block)
+        messages = build_messages(effective_message, history, memory_block)
         model_name = llm_store.get_active_model()
     except BaseException:
         # 预处理阶段失败：归还已持有的并发资源
@@ -135,14 +153,21 @@ async def chat(
                 yield _sse({"type": "queue", "position": position})
             slot_acquired = True
 
+            # 图片 OCR 结果/错误在作答前下发；识别失败则不进入答题流程
+            if ocr_text:
+                yield _sse({"type": "ocr", "text": ocr_text})
+            if ocr_error:
+                yield _sse({"type": "error", "detail": ocr_error})
+
             full_content = ""
-            error_occurred = False
+            error_occurred = bool(ocr_error)
             prompt_tokens = 0
             completion_tokens = 0
             kp_ids: list[str] = []
             suggestions: list[str] = []
 
-            for chunk in stream_chat(messages, model_name, subject, user_id, conversation_id):
+            for chunk in ([] if error_occurred else
+                          stream_chat(messages, model_name, subject, user_id, conversation_id)):
                 if "error" in chunk:
                     yield _sse({"type": "error", "detail": chunk["error"]})
                     error_occurred = True
