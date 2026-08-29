@@ -26,7 +26,7 @@ MVP 范围:**仅在对话页**增加图片入口;考试/错题页暂不支持。
    c. 下发 SSE 事件 `{"type":"ocr","text":extracted}`,前端展示"已识别题目"。
    d. **在 DB 插入 user 消息之前**完成 OCR,使 `messages` 表与 `build_messages` 都使用 `effective_message`。
 3. 下游 `build_messages` + `stream_chat`(RAG/Function Calling/流式/追问建议)**完全不变**。
-4. 识别失败/为空 → 下发 SSE error,不进入答题流程。
+4. 识别失败/为空 → 预处理阶段直接 400，不进入答题流程。
 
 ## 组件改动
 
@@ -35,7 +35,7 @@ MVP 范围:**仅在对话页**增加图片入口;考试/错题页暂不支持。
 | 配置 | `backend/app/config.py` | 新增 `VISION_MODEL`(默认 `qwen-vl-max`,可切换) |
 | 模型 | `backend/app/models.py` | `ChatRequest` 增加 `image_base64: str \| None = None` |
 | 服务 | `backend/app/chat/qwen_service.py` | 新增 `extract_question_text(image_base64) -> str`(单次非流式视觉调用) |
-| 路由 | `backend/app/chat/router.py` | OCR 步骤 + 组合消息 + SSE ocr 事件;OCR 置于 DB 插入前 |
+| 路由 | `backend/app/chat/router.py` | OCR 步骤（线程池） + 组合消息 + SSE ocr 事件；失败 400；OCR 置于 DB 插入前 |
 | 前端 | `frontend/src/app/(chat)` 输入组件 | 图片按钮、压缩、预览、发送、展示 ocr 事件 |
 
 ## OCR Prompt
@@ -52,9 +52,9 @@ MVP 范围:**仅在对话页**增加图片入口;考试/错题页暂不支持。
 
 ## 错误处理
 
-- 图片超大/格式非法 → 400。
-- OCR 调用异常 → SSE `{"type":"error"}`,提示"图片识别失败"。
-- OCR 结果为空 → SSE error,提示重拍或改用文字。
+- 图片超大/格式非法 → 400（Nginx/前端拦截）。
+- OCR 调用异常或结果为空 → 预处理阶段直接 **400**，不建对话、不落库消息、不消耗配额（实施时优化：比 SSE error 更干净，前端已有非 2xx 提示路径）。
+- OCR 调用放 `asyncio.to_thread`，避免同步视觉调用阻塞事件循环。
 
 ## 成本与配额
 
@@ -69,6 +69,6 @@ MVP 范围:**仅在对话页**增加图片入口;考试/错题页暂不支持。
 
 ## 测试
 
-- mock 视觉 OCR 返回,断言组合消息进入 RAG 流程且 SSE 含 ocr 事件。
-- 断言无图消息流程完全不变(回归)。
-- 断言 OCR 失败/为空 → error 事件,不答题。
+- mock 视觉 OCR 返回，断言组合消息进入 RAG 流程且 SSE 含 ocr 事件（补丁打到 router 模块绑定）。
+- 断言无图消息流程完全不变（回归）。
+- 断言 OCR 失败/为空 → 400，不落库消息。

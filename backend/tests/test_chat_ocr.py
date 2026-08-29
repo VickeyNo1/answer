@@ -52,9 +52,11 @@ def test_extract_question_text_returns_content(monkeypatch):
 
 
 def test_chat_with_image_emits_ocr_and_stores_combined(client, student_headers, monkeypatch):
+    from app.chat import router as chat_router
     from app.chat import qwen_service
     from app.database import get_db_ctx
-    monkeypatch.setattr(qwen_service, "extract_question_text", lambda b64: "识别出的题目")
+    # router 直接导入函数名，补丁需打到 router 模块的绑定上
+    monkeypatch.setattr(chat_router, "extract_question_text", lambda b64: "识别出的题目")
     monkeypatch.setattr(qwen_service, "create_client",
                         lambda: FakeClient(lambda: [_Chunk("答案。", finish="stop")]))
     resp = client.post("/api/chat", json={
@@ -70,13 +72,19 @@ def test_chat_with_image_emits_ocr_and_stores_combined(client, student_headers, 
     assert row["content"] == "请解答\n\n【图片识别内容】\n识别出的题目"
 
 
-def test_chat_image_ocr_empty_errors(client, student_headers, monkeypatch):
-    from app.chat import qwen_service
-    monkeypatch.setattr(qwen_service, "extract_question_text", lambda b64: "")
+def test_chat_image_ocr_empty_400_no_message(client, student_headers, monkeypatch):
+    from app.chat import router as chat_router
+    from app.database import get_db_ctx
+    monkeypatch.setattr(chat_router, "extract_question_text", lambda b64: "")
+    with get_db_ctx() as db:
+        before = db.execute("SELECT COUNT(*) AS cnt FROM messages").fetchone()["cnt"]
     resp = client.post("/api/chat", json={
         "conversation_id": None, "message": "", "subject": "cpa_acc",
         "image_base64": "QUJD",
     }, headers=student_headers)
-    assert resp.status_code == 200
-    assert '"type": "error"' in resp.text
-    assert '"type": "delta"' not in resp.text
+    # 识别为空直接 400：不建对话、不落库消息、不消耗配额、不进入答题
+    assert resp.status_code == 400
+    assert "未从图片中识别到题目文字" in resp.text
+    with get_db_ctx() as db:
+        after = db.execute("SELECT COUNT(*) AS cnt FROM messages").fetchone()["cnt"]
+    assert before == after

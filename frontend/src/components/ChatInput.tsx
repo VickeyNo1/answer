@@ -29,6 +29,13 @@ export function ChatInput({ onSend, disabled, placeholder, initialValue, onImage
     textarea.style.height = Math.min(textarea.scrollHeight, 200) + "px";
   }, [text]);
 
+  // 组件卸载时释放预览 Object URL，避免 blob 泄漏
+  useEffect(() => {
+    return () => {
+      if (imagePreview) URL.revokeObjectURL(imagePreview);
+    };
+  }, [imagePreview]);
+
   function handleSubmit() {
     const trimmed = text.trim();
     if (disabled || (!trimmed && !imageBase64)) return;

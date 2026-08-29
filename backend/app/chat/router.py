@@ -1,5 +1,7 @@
 """对话路由：SSE 流式对话（Function Calling + 知识库检索） + 对话 CRUD + 答案反馈"""
+import asyncio
 import json
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from app.auth.deps import get_current_user
@@ -20,6 +22,7 @@ from app.llm import store as llm_store
 from app import settings_store
 
 router = APIRouter(prefix="/api", tags=["对话"])
+logger = logging.getLogger(__name__)
 
 
 # ========== SSE 流式对话 ==========
@@ -73,16 +76,26 @@ async def chat(
                 detail="当前提问人数较多，请稍后再试",
             )
 
-        # 3.5 图片 OCR（方案 B）：识别题目文字；失败不抛异常，转 SSE error
+        # 3.5 图片 OCR（方案 B）：识别题目文字；失败/为空直接 400，
+        # 不建对话、不落库用户消息、不消耗配额（异常由下方 except 归还并发资源）
         ocr_text = None
-        ocr_error = None
         if req.image_base64:
             try:
-                ocr_text = (extract_question_text(req.image_base64) or "").strip()
-                if not ocr_text:
-                    ocr_error = "未从图片中识别到题目文字，请重拍或改用文字提问"
-            except Exception as e:
-                ocr_error = f"图片识别失败，请稍后再试（{e}）"
+                # 同步视觉调用放线程池，避免阻塞事件循环（影响其他用户的 SSE 推送）
+                ocr_text = (await asyncio.to_thread(
+                    extract_question_text, req.image_base64
+                ) or "").strip()
+            except Exception:
+                logger.exception("图片 OCR 调用异常 user_id=%s", user_id)
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="图片识别失败，请稍后再试",
+                )
+            if not ocr_text:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="未从图片中识别到题目文字，请重拍或改用文字提问",
+                )
         effective_message = req.message
         if ocr_text:
             effective_message = (
@@ -153,21 +166,18 @@ async def chat(
                 yield _sse({"type": "queue", "position": position})
             slot_acquired = True
 
-            # 图片 OCR 结果/错误在作答前下发；识别失败则不进入答题流程
+            # 图片 OCR 识别结果在作答前下发（失败已在预处理阶段 400 拒绝）
             if ocr_text:
                 yield _sse({"type": "ocr", "text": ocr_text})
-            if ocr_error:
-                yield _sse({"type": "error", "detail": ocr_error})
 
             full_content = ""
-            error_occurred = bool(ocr_error)
+            error_occurred = False
             prompt_tokens = 0
             completion_tokens = 0
             kp_ids: list[str] = []
             suggestions: list[str] = []
 
-            for chunk in ([] if error_occurred else
-                          stream_chat(messages, model_name, subject, user_id, conversation_id)):
+            for chunk in stream_chat(messages, model_name, subject, user_id, conversation_id):
                 if "error" in chunk:
                     yield _sse({"type": "error", "detail": chunk["error"]})
                     error_occurred = True
