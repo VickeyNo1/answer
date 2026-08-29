@@ -19,6 +19,8 @@ interface ChatWindowProps {
   kbRefsByMessage?: Record<number, KbRef[]>;
   /** v4.0 追问建议（最后一条回答之后展示） */
   suggestions?: string[];
+  /** 图片题目 OCR 识别文本（作答前展示“已识别题目”） */
+  ocrText?: string | null;
   onSuggestionClick?: (text: string) => void;
 }
 
@@ -31,6 +33,7 @@ export function ChatWindow({
   streamingKbRefs,
   kbRefsByMessage,
   suggestions,
+  ocrText,
   onSuggestionClick,
 }: ChatWindowProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -115,6 +118,18 @@ export function ChatWindow({
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                       </svg>
                       <span>当前提问人数较多，排队中（第 {queuePosition} 位）…</span>
+                    </div>
+                  )}
+                  {ocrText && !streamingContent && (
+                    <div className="mb-1 flex items-center gap-1.5 text-xs text-green-600">
+                      <svg className="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      <span>
+                        已识别题目，正在作答…
+                        <span className="ml-1 text-gray-400">{ocrText.slice(0, 40)}{ocrText.length > 40 ? "…" : ""}</span>
+                      </span>
                     </div>
                   )}
                   {kbSearching && !streamingContent && (

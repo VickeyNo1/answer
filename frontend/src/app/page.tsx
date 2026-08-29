@@ -60,6 +60,8 @@ function HomeContent() {
   const streamingKbRefsRef = useRef<KbRef[]>([]);
   const [kbRefsByMessage, setKbRefsByMessage] = useState<Record<number, KbRef[]>>({});
   const [suggestions, setSuggestions] = useState<string[]>([]);
+  // 图片题目 OCR 识别文本（作答前展示）
+  const [ocrText, setOcrText] = useState<string | null>(null);
 
   // 错误提示（kind 区分普通错误与 429 配额/排队提示）
   const [error, setError] = useState("");
@@ -153,9 +155,9 @@ function HomeContent() {
     [currentId]
   );
 
-  // 发送消息（SSE 流式）
+  // 发送消息（SSE 流式；可携带题目图片，后端先 OCR 再走同一答疑管线）
   const handleSendMessage = useCallback(
-    async (message: string) => {
+    async (message: string, imageBase64?: string | null) => {
       setError("");
       setStreaming(true);
       setStreamingContent("");
@@ -163,14 +165,15 @@ function HomeContent() {
       setQueuePosition(null);
       setStreamingKbRefs([]);
       setSuggestions([]);
+      setOcrText(null);
       streamingContentRef.current = "";
       streamingKbRefsRef.current = [];
 
-      // 先把用户消息追加到列表
+      // 先把用户消息追加到列表（仅图片时占位显示）
       const tempUserMsg: MessageOut = {
         id: Date.now(),
         role: "user",
-        content: message,
+        content: message || (imageBase64 ? "📷 图片题目" : ""),
         created_at: new Date().toISOString(),
       };
       setMessages((prev) => [...prev, tempUserMsg]);
@@ -179,7 +182,7 @@ function HomeContent() {
       const targetConversationId = currentId;
 
       try {
-        await sendChatMessage(targetConversationId, message, selectedSubject || null, {
+        await sendChatMessage(targetConversationId, message, selectedSubject || null, imageBase64 ?? null, {
           onStart: (convId) => {
             // 如果是新对话，更新 currentId 并刷新列表
             if (targetConversationId === null) {
@@ -200,6 +203,9 @@ function HomeContent() {
           },
           onSuggestions: (items) => {
             setSuggestions(items);
+          },
+          onOcr: (text) => {
+            setOcrText(text);
           },
           onDelta: (content) => {
             setKbSearching(false);
@@ -231,6 +237,7 @@ function HomeContent() {
             setStreaming(false);
             setKbSearching(false);
             setQueuePosition(null);
+            setOcrText(null);
             // 如果是新对话，刷新对话列表获取正确标题
             if (targetConversationId === null) {
               loadConversations();
@@ -244,6 +251,7 @@ function HomeContent() {
             setStreamingContent("");
             setKbSearching(false);
             setQueuePosition(null);
+            setOcrText(null);
             setStreamingKbRefs([]);
             streamingKbRefsRef.current = [];
           },
@@ -446,9 +454,18 @@ function HomeContent() {
                 streamingKbRefs={streamingKbRefs}
                 kbRefsByMessage={kbRefsByMessage}
                 suggestions={suggestions}
+                ocrText={ocrText}
                 onSuggestionClick={handleSendMessage}
               />
-              <ChatInput onSend={handleSendMessage} disabled={streaming} initialValue={prefillAsk} />
+              <ChatInput
+                onSend={handleSendMessage}
+                disabled={streaming}
+                initialValue={prefillAsk}
+                onImageError={(detail) => {
+                  setError(detail);
+                  setErrorKind("error");
+                }}
+              />
             </>
           )}
         </div>

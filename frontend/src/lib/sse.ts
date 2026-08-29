@@ -19,6 +19,8 @@ export interface SSECallbacks {
   onQueue?: (position: number) => void;
   onKbRefs?: (refs: KbRef[]) => void;
   onSuggestions?: (items: string[]) => void;
+  /** 图片题目 OCR 识别结果（作答前下发） */
+  onOcr?: (text: string) => void;
 }
 
 /**
@@ -28,6 +30,7 @@ export async function sendChatMessage(
   conversationId: number | null,
   message: string,
   subject: string | null,
+  imageBase64: string | null,
   callbacks: SSECallbacks
 ): Promise<void> {
   const token = getToken();
@@ -46,6 +49,7 @@ export async function sendChatMessage(
       conversation_id: conversationId,
       message,
       subject,
+      image_base64: imageBase64 || undefined,
     }),
   });
 
@@ -111,6 +115,9 @@ export async function sendChatMessage(
             break;
           case "suggestions":
             callbacks.onSuggestions?.(data.items);
+            break;
+          case "ocr":
+            callbacks.onOcr?.(data.text);
             break;
         }
       } catch {
