@@ -219,7 +219,7 @@ def clean_exams(db_ready):
 
 @pytest.fixture(autouse=True)
 def bg_grading_calls(monkeypatch):
-    """拦截交卷后的后台判卷任务，避免测试真调 dashscope
+    """拦截交卷后的后台判卷任务，避免测试真调百炼
 
     返回被提交判卷的 exam_id 列表供断言；需要验证判卷流程的用例
     在 mock 掉 judger._call_llm 后同步调 judger.grade_exam(exam_id)。
@@ -297,7 +297,7 @@ def clean_profile(db_ready):
 
 @pytest.fixture(autouse=True)
 def bg_profile_calls(monkeypatch):
-    """拦截后台画像总结任务，避免测试真调 dashscope
+    """拦截后台画像总结任务，避免测试真调百炼
 
     返回被提交画像总结的 user_id 列表供断言；需要验证画像流程的用例
     在 mock 掉 summarizer._call_llm 后同步调 summarizer.summarize_profile(user_id)。

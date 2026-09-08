@@ -5,13 +5,13 @@ uvicorn[standard]==0.30.*
 # 认证
 python-jose[cryptography]==3.3.*
 passlib[bcrypt]==1.7.*
+bcrypt>=4.2.0
 
 # 文件上传
 python-multipart==0.0.*
 
 # AI 模型（百炼 OpenAI 兼容端点）
 openai>=1.0.0
-dashscope>=1.20.0
 
 # 数据库（机器A MySQL 8.4）
 pymysql==1.1.*
