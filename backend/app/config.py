@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     JUDGE_MODEL: str = ""
     PROFILE_MODEL: str = ""
     VERIFY_MODEL: str = ""
+    # 批量评测：400 题一次性跑，想固定用最便宜档而不受生产对话切换模型影响
+    EVAL_MODEL: str = ""
 
     @property
     def cors_origins_list(self) -> list[str]:

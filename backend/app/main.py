@@ -1,4 +1,6 @@
 from contextlib import asynccontextmanager
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -9,19 +11,43 @@ from app.auth.router import router as auth_router, me_router
 from app.chat.router import router as chat_router
 from app.chat import concurrency
 from app.admin.router import router as admin_router
+from app.admin.eval import router as eval_router
 from app.exam.router import router as exam_router, admin_router as exam_admin_router
 from app.profile.router import router as profile_router, admin_router as profile_admin_router
 from app.llm.router import router as llm_router
+from app.llm import store as llm_store
 from app.kb import client as kb_client
 from app.kb.subjects import router as subjects_router
+
+logger = logging.getLogger(__name__)
+
+
+def _warn_unpriced_models() -> None:
+    """启动自检：会被调用但没有单价记录的模型，其 cost 会恒为 0 且不报错
+
+    「激活模型被删 → 回退 .env 的 CHAT_MODEL → 该名不在 model_configs」这条链
+    曾经静默跑过一整天，用量报表少报一半开销。告警性质，异常不阻断启动。
+    """
+    try:
+        missing = llm_store.find_unpriced_models()
+    except Exception as e:
+        logger.warning("模型单价自检失败（不影响启动）: %s", e)
+        return
+    if missing:
+        logger.warning(
+            "以下模型会被调用但 model_configs 无记录，其用量 cost 将恒为 0（报表少报）：%s。"
+            "请到管理后台「大模型」Tab 补录单价，或重跑 seed.py",
+            ", ".join(missing),
+        )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期：启动时建表、加载全局设置缓存、初始化并发闸门"""
+    """应用生命周期：启动时建表、加载全局设置缓存、初始化并发闸门、模型单价自检"""
     init_db()
     settings_store.load_settings()
     concurrency.init(settings_store.get_int("chat_concurrency"))
+    _warn_unpriced_models()
     yield
 
 
@@ -47,6 +73,7 @@ app.include_router(auth_router)
 app.include_router(me_router)
 app.include_router(chat_router)
 app.include_router(admin_router)
+app.include_router(eval_router)
 app.include_router(llm_router)
 app.include_router(exam_router)
 app.include_router(exam_admin_router)

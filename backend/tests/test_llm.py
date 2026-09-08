@@ -4,6 +4,7 @@
 覆盖：模型 CRUD、activate 切换、usage 统计、record_usage 入库与 compute_cost。
 """
 import pytest
+from app.config import get_settings
 from app.database import get_db_ctx
 from app.llm import store
 
@@ -96,6 +97,38 @@ class TestModelCRUD:
         resp = client.delete(f"/api/admin/models/{created['id']}", headers=admin_headers)
         assert resp.status_code == 404
 
+    def test_delete_active_model_conflict(self, client, admin_headers):
+        """当前使用的模型不可删（409），切走之后才能删
+
+        删掉激活模型会让全表 is_active 归零，get_active_model() 静默回退 .env 的
+        CHAT_MODEL；该名若不在 model_configs 中，compute_cost 单价回退 0.0，
+        此后所有用量 cost 恒为 0 且不报错。
+        """
+        created = client.post("/api/admin/models", json={
+            "provider": "ali",
+            "model_name": "test_del_active",
+            "display_name": "激活态待删",
+            "price_in": 0.001,
+            "price_out": 0.002,
+        }, headers=admin_headers).json()
+        client.post(f"/api/admin/models/{created['id']}/activate", headers=admin_headers)
+
+        resp = client.delete(f"/api/admin/models/{created['id']}", headers=admin_headers)
+        assert resp.status_code == 409
+        assert "当前使用" in resp.json()["detail"]
+
+        other = client.post("/api/admin/models", json={
+            "provider": "ali",
+            "model_name": "test_del_active_other",
+            "display_name": "接手激活",
+            "price_in": 0.001,
+            "price_out": 0.002,
+        }, headers=admin_headers).json()
+        client.post(f"/api/admin/models/{other['id']}/activate", headers=admin_headers)
+
+        resp = client.delete(f"/api/admin/models/{created['id']}", headers=admin_headers)
+        assert resp.status_code == 200
+
     def test_activate_model(self, client, admin_headers):
         """设为当前模型：目标 is_active=1，其余置 0"""
         m1 = client.post("/api/admin/models", json={
@@ -142,6 +175,32 @@ class TestUsage:
         # 1000 输入 * 0.002/千 + 500 输出 * 0.008/千 = 0.002 + 0.004 = 0.006
         cost = store.compute_cost("test_cost", 1000, 500)
         assert cost == pytest.approx(0.006)
+
+    def test_compute_cost_unknown_model_is_zero(self):
+        """模型不在 model_configs 时单价回退 0.0 —— 费用静默少报的根因
+
+        tokens 照记、cost 恒为 0，报表看不出任何异常，故必须有
+        find_unpriced_models 的启动自检兜住。
+        """
+        assert store.compute_cost("test_no_such_model", 1000, 500) == 0.0
+
+    def test_find_unpriced_models(self, client, admin_headers, monkeypatch):
+        """自检要查出会被调用但没有单价记录的模型名"""
+        client.post("/api/admin/models", json={
+            "provider": "ali", "model_name": "test_priced",
+            "display_name": "有价", "price_in": 0.001, "price_out": 0.002,
+        }, headers=admin_headers)
+
+        monkeypatch.setattr(store, "get_active_model", lambda: "test_priced")
+        settings = get_settings()
+        monkeypatch.setattr(settings, "CHAT_MODEL", "test_priced")
+        monkeypatch.setattr(settings, "VISION_MODEL", "test_phantom_vision")
+        monkeypatch.setattr(settings, "JUDGE_MODEL", "test_phantom_judge")
+        monkeypatch.setattr(settings, "PROFILE_MODEL", "")
+        monkeypatch.setattr(settings, "VERIFY_MODEL", "   ")
+
+        # 空串与纯空格（= 跟随激活模型）要被过滤掉，只报真正的幻影名，且已排序
+        assert store.find_unpriced_models() == ["test_phantom_judge", "test_phantom_vision"]
 
     def test_record_usage_and_stats(self, client, admin_headers):
         """记录用量后统计可见"""

@@ -11,7 +11,13 @@ from types import SimpleNamespace
 import pytest
 
 from app.chat import solver
-from app.chat.qwen_service import DEGRADED_SUFFIX, EMPTY_SUFFIX, build_messages
+from app.chat.qwen_service import (
+    DEGRADED_SUFFIX,
+    EMPTY_SUFFIX,
+    SUGGESTIONS_INSTRUCTION,
+    build_messages,
+)
+from app.kb.prompt import MARKER_NOTICE
 from app.chat.solver import (
     EXACT_SUFFIX,
     NONE_SUFFIX,
@@ -344,6 +350,83 @@ class TestNoneTier:
         assert prompt.index("例题B") < prompt.index("老数据")
 
 
+# ========== 相关性下限 ==========
+
+
+class TestRelevanceFloor:
+    """检索服务没有相关性下限，「题库返回了结果」≠「题库里有相关的题」
+
+    乱码 query 也会返回满 top_k 条，score 又只是重排后的排序分、跨请求不可比，
+    故相关性只能由校验模型在同一次调用里指认（relevant_indexes），零额外成本。
+    """
+
+    def test_irrelevant_candidates_drop_to_none_tier(self, kb, llm, verify):
+        calls = kb(questions=[make_question("Q-001", stem="存货跌价准备"),
+                              make_question("Q-002", stem="长期股权投资")],
+                   textbook=[make_textbook()])
+        llm_calls = llm()
+        verify({"same": False, "index": None, "relevant_indexes": [],
+                "reason": "均为其他章节"})
+
+        events, text = _drain(run_solve(_messages(), "m", "cpa_acc", query_text="融资租赁"))
+
+        match = _one(events, "match")["match"]
+        assert match["tier"] == "none"
+        assert match["verify_reason"] == "均为其他章节"
+        assert match["kb_scores"] == [0.87, 0.87]      # 检索确实返回了结果
+        prompt = _system_prompt(llm_calls)
+        assert "存货跌价准备" not in prompt
+        assert "长期股权投资" not in prompt
+        assert solver.SIMILAR_HEADING not in prompt     # 噪声没被塞进去
+        assert calls[1]["top_k"] == 8                   # 走 none 档的教材定向检索
+        assert text.endswith(NONE_SUFFIX)               # 仍然给出完整解答
+
+    def test_only_relevant_subset_injected(self, kb, llm, verify):
+        kb(questions=[
+            make_question("Q-001", stem="存货跌价准备", knowledge_point_ids=["ACC-01-01-01"]),
+            make_question("Q-002", stem="融资租赁初始计量", knowledge_point_ids=["ACC-21-02-02"]),
+        ], textbook=[make_textbook()])
+        llm_calls = llm()
+        verify({"same": False, "index": None, "relevant_indexes": [2],
+                "reason": "只有第2道同领域"})
+
+        events, _ = _drain(run_solve(_messages(), "m", "cpa_acc", query_text="融资租赁"))
+
+        assert _one(events, "match")["match"]["tier"] == "similar"
+        prompt = _system_prompt(llm_calls)
+        assert "融资租赁初始计量" in prompt
+        assert "存货跌价准备" not in prompt
+        refs = _one(events, "kb_refs")["kb_refs"]
+        assert [r["title"] for r in refs if r["title"].startswith("题库")] == ["题库 Q-002"]
+        kp = _one(events, "kp_ids")["kp_ids"]
+        assert "ACC-21-02-02" in kp and "ACC-01-01-01" not in kp
+
+    def test_textbook_query_uses_only_relevant_subset(self, kb, llm, verify):
+        """教材检索的 topic query 取自相关子集，排在首位的无关候选不得干扰"""
+        calls = kb(questions=[
+            make_question("Q-001", stem="存货跌价准备"),
+            make_question("Q-002", stem="融资租赁初始计量"),
+        ], textbook=[make_textbook()])
+        llm()
+        verify({"same": False, "index": None, "relevant_indexes": [2], "reason": "x"})
+        _drain(run_solve(_messages(), "m", "cpa_acc", query_text="原始提问"))
+        assert calls[1]["query"] == "第一章 总论 融资租赁初始计量"
+
+    def test_no_signal_injects_all_candidates(self, kb, llm, verify):
+        """没拿到相关性信号（字段缺失/校验失败）→ 沿用旧的保守行为，全量注入"""
+        kb(questions=[make_question("Q-001"), make_question("Q-002")],
+           textbook=[make_textbook()])
+        llm_calls = llm()
+        verify({"same": False, "index": None, "reason": "校验失败：模型超时"})
+
+        events, text = _drain(run_solve(_messages(), "m", "cpa_acc", query_text="q"))
+
+        assert _one(events, "match")["match"]["tier"] == "similar"
+        prompt = _system_prompt(llm_calls)
+        assert "Q-001" in prompt and "Q-002" in prompt
+        assert text.endswith(SIMILAR_SUFFIX)
+
+
 # ========== 服务不可用 ==========
 
 
@@ -495,6 +578,84 @@ class TestPractice:
         assert not [e for e in events if "kp_ids" in e]
 
 
+# ========== 标头行防泄漏（P1-B） ==========
+
+
+class TestMarkerNotice:
+    """检索资料的「【题目N｜…】」「【资料N｜…】」标头行曾被模型原样抄进答案
+
+    说明必须紧跟资料之后（「上方资料」的指代才成立），且在追问建议指令之前——
+    两条都是输出格式约束，谁压谁都会出问题，故各守其位。
+    """
+
+    def test_exact_prompt_has_notice_after_questions(self, kb, llm, verify):
+        kb(questions=[make_question()])
+        llm_calls = llm()
+        verify({"same": True, "index": 1, "reason": "x"})
+        _drain(run_solve(_messages(), "m", "cpa_acc", query_text="q"))
+        prompt = _system_prompt(llm_calls)
+        assert MARKER_NOTICE in prompt
+        assert prompt.index("【题目1｜") < prompt.index(MARKER_NOTICE)
+
+    def test_similar_two_blocks_share_one_notice(self, kb, llm, verify):
+        """题库 + 教材两段资料拼在一起时只说一遍，别把 prompt 撑肥"""
+        kb(questions=[make_question()], textbook=[make_textbook()])
+        llm_calls = llm()
+        verify({"same": False, "index": None, "reason": "x"})
+        _drain(run_solve(_messages(), "m", "cpa_acc", query_text="q"))
+        prompt = _system_prompt(llm_calls)
+        assert prompt.count(MARKER_NOTICE) == 1
+        assert prompt.index("【资料1｜") < prompt.index(MARKER_NOTICE)
+
+    def test_notice_precedes_suggestions_instruction(self, kb, llm):
+        kb(questions=[], textbook=[make_textbook()])
+        llm_calls = llm()
+        _drain(run_solve(_messages(), "m", "cpa_acc", query_text="q"))
+        prompt = _system_prompt(llm_calls)
+        assert prompt.index(MARKER_NOTICE) < prompt.index(SUGGESTIONS_INSTRUCTION)
+
+    def test_no_notice_without_any_context(self, kb, llm):
+        """两次检索都空 → 只有 NO_CONTEXT_TEXT，没有标头行可交代"""
+        kb(questions=[], textbook=[])
+        llm_calls = llm()
+        _drain(run_solve(_messages(), "m", "cpa_acc", query_text="q"))
+        prompt = _system_prompt(llm_calls)
+        assert solver.NO_CONTEXT_TEXT in prompt
+        assert MARKER_NOTICE not in prompt
+
+    def test_no_notice_when_kb_down(self, kb, llm):
+        kb()
+        llm_calls = llm()
+        _drain(run_solve(_messages(), "m", "cpa_acc", query_text="q"))
+        prompt = _system_prompt(llm_calls)
+        assert solver.KB_DOWN_TEXT in prompt
+        assert MARKER_NOTICE not in prompt
+
+    def test_practice_prompt_has_notice(self, kb, llm, monkeypatch):
+        kb(questions=[make_question()])
+        llm_calls = llm()
+        monkeypatch.setattr(solver.settings_store, "get_bool", lambda k: False)
+        _drain(run_practice(_practice_messages("来几道题"), "m", "cpa_acc"))
+        assert MARKER_NOTICE in _system_prompt(llm_calls)
+
+    def test_practice_compose_prompt_has_notice(self, kb, llm, monkeypatch):
+        """据教材命题时资料是「【资料N｜…】」，同样要交代"""
+        kb(questions=[], textbook=[make_textbook()])
+        llm_calls = llm()
+        monkeypatch.setattr(solver.settings_store, "get_bool", lambda k: False)
+        _drain(run_practice(_practice_messages("来几道题"), "m", "cpa_acc"))
+        assert MARKER_NOTICE in _system_prompt(llm_calls)
+
+    def test_notice_never_leaks_into_answer_text(self, kb, llm, verify):
+        """说明只进 system prompt，不得混进下发给学生的正文"""
+        kb(questions=[make_question()], textbook=[make_textbook()])
+        llm(["这是解答。"])
+        verify({"same": False, "index": None, "reason": "x"})
+        _, text = _drain(run_solve(_messages(), "m", "cpa_acc", query_text="q"))
+        assert MARKER_NOTICE not in text
+        assert "内部标头不外泄" not in text
+
+
 class _NSMsg:
     def __init__(self, content): self.content = content
 
@@ -557,12 +718,36 @@ class TestVerifySameQuestion:
     def test_returns_parsed_result_and_uses_verify_model(self, verify_llm):
         verify_llm(_NSResp('{"same": true, "index": 2, "reason": "数据一致"}'))
         out = solver.verify_same_question("题干", [make_question(), make_question("Q-2")])
-        assert out == {"same": True, "index": 2, "reason": "数据一致"}
+        assert out == {"same": True, "index": 2, "relevant_indexes": None,
+                       "reason": "数据一致"}
         kw = verify_llm.calls[0]
         assert kw["model"] == "verify-model"
         assert kw["extra_body"] == {"enable_thinking": False}
         assert "stream" not in kw                    # 校验必须非流式
         assert "Q-2" in kw["messages"][-1]["content"]
+
+    def test_relevant_indexes_clamped_to_candidate_count(self, verify_llm):
+        """越界序号在本层裁掉——parse_verify_result 不知道候选有几条"""
+        verify_llm(_NSResp(
+            '{"same": false, "index": null, "relevant_indexes": [1, 5, -2], "reason": "x"}'))
+        out = solver.verify_same_question("题干", [make_question(), make_question("Q-2")])
+        assert out["relevant_indexes"] == [1]
+
+    def test_all_indexes_out_of_range_degrades_to_no_signal(self, verify_llm):
+        """序号全部越界 = 模型幻觉，属「信号不可用」而非「明确无相关」"""
+        verify_llm(_NSResp(
+            '{"same": false, "index": null, "relevant_indexes": [7, 9], "reason": "x"}'))
+        out = solver.verify_same_question("题干", [make_question(), make_question("Q-2")])
+        assert out["relevant_indexes"] is None
+
+    def test_exception_path_is_no_signal_not_empty(self, verify_llm):
+        """校验挂掉必须是「无信号」(None)，不能是「明确无相关」([])
+
+        否则每次校验超时都会让 run_solve 归 none 档、丢掉本来可用的相似题参考。
+        """
+        verify_llm(RuntimeError("连接超时"))
+        out = solver.verify_same_question("题干", [make_question()])
+        assert out["relevant_indexes"] is None
 
     def test_records_usage_as_verify_task(self, verify_llm):
         verify_llm(_NSResp('{"same": false, "index": null, "reason": "x"}',
@@ -595,7 +780,8 @@ class TestVerifySameQuestion:
     def test_empty_candidates_skips_llm_call(self, verify_llm):
         """无候选直接判否，不浪费一次调用"""
         out = solver.verify_same_question("题干", [])
-        assert out == {"same": False, "index": None, "reason": "无候选题"}
+        assert out == {"same": False, "index": None, "relevant_indexes": [],
+                       "reason": "无候选题"}
         assert verify_llm.calls == []
 
     def test_response_without_usage_attribute(self, verify_llm):

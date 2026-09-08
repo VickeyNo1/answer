@@ -60,12 +60,24 @@ async def update_model(
 
 @router.delete("/{model_id}")
 async def delete_model(model_id: int, admin: dict = Depends(require_admin)):
-    """删除模型配置"""
-    if not store.delete_model(model_id):
+    """删除模型配置（当前使用的模型不可删，须先切换）
+
+    activate_model 会先把全表 is_active 清零，删掉激活模型后系统就没有任何激活模型，
+    get_active_model() 会静默回退 .env 的 CHAT_MODEL；那个名字若不在 model_configs 里，
+    compute_cost 单价回退 0.0，此后所有用量的 cost 恒为 0 且不报任何错。
+    """
+    existing = store.get_model(model_id)
+    if existing is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="模型不存在",
         )
+    if existing["is_active"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="不能删除当前使用的模型，请先切换到其他模型",
+        )
+    store.delete_model(model_id)
     return {"message": "ok"}
 
 

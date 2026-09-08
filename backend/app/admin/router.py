@@ -174,7 +174,15 @@ async def delete_student(
     student_id: int,
     admin: dict = Depends(require_admin),
 ):
-    """删除学生（级联删除其对话和消息）"""
+    """删除学生（级联删除其全部学习数据；用量日志保留但解除归属）
+
+    两类数据的处理刻意不同：
+    - **硬删**：含学生学习内容与提问痕迹的表——会话/消息、反馈、试卷及作答明细、
+      错题本、画像、检索日志（query 存的是学生提问原文）。
+    - **保留但置空归属**：`usage_logs` 只有 tokens/费用/模型名，没有提问内容；
+      删掉会让「累计费用」少报已经真实发生的开销，故把 user_id/conversation_id
+      置 NULL（两列均可空），行本身留下。
+    """
     with get_db_ctx() as db:
         cursor = db.execute(
             "SELECT * FROM users WHERE id = %s",
@@ -193,13 +201,14 @@ async def delete_student(
                 detail="不能删除管理员账号",
             )
 
-        # 级联删除：先删消息，再删对话，最后删用户
-        conv_ids_cursor = db.execute(
-            "SELECT id FROM conversations WHERE user_id = %s",
-            (student_id,),
-        )
-        conv_ids = [r["id"] for r in conv_ids_cursor.fetchall()]
+        conv_ids = [r["id"] for r in db.execute(
+            "SELECT id FROM conversations WHERE user_id = %s", (student_id,)
+        ).fetchall()]
+        exam_ids = [r["id"] for r in db.execute(
+            "SELECT id FROM exams WHERE user_id = %s", (student_id,)
+        ).fetchall()]
 
+        # 先删从表再删主表：messages 依赖 conversations，exam_answers 依赖 exams
         if conv_ids:
             placeholders = ",".join(["%s"] * len(conv_ids))
             db.execute(
@@ -210,7 +219,24 @@ async def delete_student(
                 f"DELETE FROM conversations WHERE id IN ({placeholders})",
                 conv_ids,
             )
+        if exam_ids:
+            placeholders = ",".join(["%s"] * len(exam_ids))
+            db.execute(
+                f"DELETE FROM exam_answers WHERE exam_id IN ({placeholders})",
+                exam_ids,
+            )
+            db.execute(
+                f"DELETE FROM exams WHERE id IN ({placeholders})",
+                exam_ids,
+            )
 
+        for table in ("feedbacks", "wrong_questions", "student_profiles", "kb_search_logs"):
+            db.execute(f"DELETE FROM {table} WHERE user_id = %s", (student_id,))
+
+        db.execute(
+            "UPDATE usage_logs SET user_id = NULL, conversation_id = NULL WHERE user_id = %s",
+            (student_id,),
+        )
         db.execute("DELETE FROM users WHERE id = %s", (student_id,))
         db.commit()
 

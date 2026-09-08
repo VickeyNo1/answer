@@ -124,6 +124,7 @@ _TASK_MODEL_FIELDS = {
     "judge": "JUDGE_MODEL",
     "profile": "PROFILE_MODEL",
     "verify": "VERIFY_MODEL",
+    "eval": "EVAL_MODEL",
 }
 
 
@@ -139,6 +140,34 @@ def get_model_for(task_type: str) -> str:
         if override:
             return override
     return get_active_model()
+
+
+def find_unpriced_models() -> list[str]:
+    """系统会实际调用、但 model_configs 里没有记录的模型名
+
+    compute_cost 查不到模型时单价回退 0.0：tokens 照记、cost 恒为 0，这笔开销在
+    用量报表里完全不可见，而且全程不报任何错。故启动时主动查出来告警，别让「激活
+    模型被删 → 回退 .env 的 CHAT_MODEL → 该名无价格行」这条链再静默跑下去。
+    """
+    settings = get_settings()
+    candidates = {
+        get_active_model(),
+        settings.CHAT_MODEL,
+        settings.VISION_MODEL,
+        *(getattr(settings, field, "") for field in _TASK_MODEL_FIELDS.values()),
+    }
+    names = sorted({n.strip() for n in candidates if (n or "").strip()})
+    if not names:
+        return []
+
+    with get_db_ctx() as db:
+        placeholders = ",".join(["%s"] * len(names))
+        rows = db.execute(
+            f"SELECT model_name FROM model_configs WHERE model_name IN ({placeholders})",
+            names,
+        ).fetchall()
+    known = {r["model_name"] for r in rows}
+    return [n for n in names if n not in known]
 
 
 # ========== 用量与费用 ==========

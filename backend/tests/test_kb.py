@@ -7,6 +7,8 @@ from app.kb.prompt import (
     ANSWER_OMITTED_HINT,
     CONTENT_TYPE_LABELS,
     FALLBACK_TEXT,
+    MARKER_NOTICE,
+    append_marker_notice,
     collect_kp_ids,
     format_results,
     sub_question_text,
@@ -75,6 +77,82 @@ class TestKBClient:
         data = kb_client.search("存货", "cpa_acc")
         assert data is None
         assert calls["n"] == 1  # 不重试
+
+
+# ========== 检索日志开关 log_enabled（v4.1 批量评测） ==========
+
+class TestLogEnabledSwitch:
+    """批量评测跑 400 题 × 2 次检索会灌 800 行 kb_search_logs，冲掉检索质量报表
+
+    开关卡在 _log_search 落库前而非函数首行，所以「日志照打、库里不写」。
+    这里把 get_db_ctx 换成计数器，无需真库即可断言三个记录点全被抑制。
+    """
+
+    @pytest.fixture
+    def db_calls(self, monkeypatch):
+        """把 get_db_ctx 换成计数器 + 假 db：抑制与否只看调用列表是否为空"""
+        calls: list[dict] = []
+
+        class _FakeDb:
+            def execute(self, sql, params=None):
+                calls[-1]["sql"] = sql
+                calls[-1]["params"] = params
+
+            def commit(self):
+                calls[-1]["committed"] = True
+
+        class _Ctx:
+            def __enter__(self_inner):
+                return _FakeDb()
+
+            def __exit__(self_inner, *a):
+                return False
+
+        def _ctx():
+            calls.append({})
+            return _Ctx()
+
+        monkeypatch.setattr("app.kb.client.get_db_ctx", _ctx)
+        return calls
+
+    def test_ok_path_suppressed(self, monkeypatch, db_calls):
+        payload = {"code": 0, "results": [{"content": "存货"}]}
+        monkeypatch.setattr("app.kb.client.httpx.post",
+                            lambda *a, **k: FakeHttpResponse(200, payload))
+        data = kb_client.search("存货", "cpa_acc", log_enabled=False)
+        assert data is not None and len(data["results"]) == 1   # 检索行为不变
+        assert db_calls == []
+
+    def test_empty_path_suppressed(self, monkeypatch, db_calls):
+        monkeypatch.setattr("app.kb.client.httpx.post",
+                            lambda *a, **k: FakeHttpResponse(200, {"code": 0, "results": []}))
+        data = kb_client.search("无关问题", "cpa_acc", log_enabled=False)
+        assert data is not None and data["results"] == []
+        assert db_calls == []
+
+    def test_http_400_path_suppressed(self, monkeypatch, db_calls):
+        monkeypatch.setattr("app.kb.client.httpx.post",
+                            lambda *a, **k: FakeHttpResponse(400, {"code": 400}))
+        assert kb_client.search("存货", "cpa_acc", log_enabled=False) is None
+        assert db_calls == []
+
+    def test_degraded_path_suppressed(self, monkeypatch, db_calls):
+        def boom(*a, **k):
+            raise TimeoutError("connect timeout")
+
+        monkeypatch.setattr("app.kb.client.httpx.post", boom)
+        assert kb_client.search("存货", "cpa_acc", log_enabled=False) is None
+        assert db_calls == []
+
+    def test_default_still_writes(self, monkeypatch, db_calls):
+        """对照组：不传 log_enabled 时必须照旧落库，否则检索报表会静默失去数据"""
+        payload = {"code": 0, "results": [{"content": "存货"}]}
+        monkeypatch.setattr("app.kb.client.httpx.post",
+                            lambda *a, **k: FakeHttpResponse(200, payload))
+        kb_client.search("存货", "cpa_acc")
+        assert len(db_calls) == 1
+        assert db_calls[0]["committed"] is True
+        assert "kb_search_logs" in db_calls[0]["sql"]
 
 
 # ========== 考试抽题 draw_exam（v4.0-M2） ==========
@@ -352,6 +430,46 @@ class TestSubQuestionText:
             "question_id": "Q-300", "sub_questions": [{"question": "编制分录", "answer": "借：存货"}],
         }]}
         assert "借：存货" in format_results(data, include_answer=True)
+
+
+# ========== 标头行防泄漏（P1-B） ==========
+
+class TestMarkerNotice:
+    """模型曾把「【题目2｜ACC-2025-Q-5.10｜multiple_choice｜知识点 …】」原样抄进答案
+
+    标头行是给模型定位资料用的内部索引，学生看到只会一头雾水。以下用例锁住说明的
+    位置与措辞要点，避免日后重构把它悄悄改丢。
+    """
+
+    def test_appended_after_context(self):
+        """说明必须在资料**之后**，「上方资料」的指代才成立"""
+        ctx = format_results(_data([_tb("融资租赁的判断标准", "example")]))
+        out = append_marker_notice(ctx)
+        assert out.endswith(MARKER_NOTICE)
+        assert out.index("【资料1｜") < out.index(MARKER_NOTICE)
+
+    def test_original_context_preserved(self):
+        ctx = format_results(_data([_tb("存货计价", "theory")]))
+        assert append_marker_notice(ctx).startswith(ctx)
+
+    def test_notice_covers_both_marker_shapes(self):
+        """题库与教材两种标头都要举例，漏一种模型就只学会避开另一种"""
+        assert "【题目" in MARKER_NOTICE and "【资料" in MARKER_NOTICE
+
+    def test_notice_forbids_copying_and_the_bar_format(self):
+        assert "不要复制这些标头行" in MARKER_NOTICE
+        assert "竖线" in MARKER_NOTICE
+
+    def test_format_results_does_not_embed_notice(self):
+        """**设计锁定**：说明不进 format_results——solve 的 similar/none 档会把题库与
+        教材两段资料拼在一起，放进去等于同一份 prompt 里说两遍"""
+        assert MARKER_NOTICE not in format_results(_data([_tb("t", "theory")]))
+        assert MARKER_NOTICE not in format_results(
+            {"collection": "questions", "results": [{"question_id": "Q-1", "stem": "题干"}]})
+
+    def test_fallback_text_gets_no_notice_from_callers(self):
+        """空结果的 FALLBACK_TEXT 里没有标头行，调用方都不附说明（见 solver/stream_chat 用例）"""
+        assert MARKER_NOTICE not in FALLBACK_TEXT
 
 
 # ========== GET /api/subjects ==========

@@ -3,19 +3,26 @@
 使用百炼 OpenAI 兼容端点（app/llm/client.py），统一支持所有模型。
 
 第 1 轮带 search_cpa_knowledge 工具调用大模型：
-- 模型直答 → 内容增量直接透传
+- 模型直答 → 内容增量直接透传；若正文声称了教材出处（其实并没查过知识库），
+  末尾追加 UNVERIFIED_SUFFIX，见 `claims_source`
 - 模型决定检索（finish_reason=tool_calls）→ 调知识库 → 组装 tool 结果
   → 第 2 轮流式生成最终答案（最多一轮工具调用）
 subject 由后端从会话上下文注入，模型只决定 query/collection/top_k。
 """
 import json
 import logging
+import re
 
 from app.config import get_settings
 from app.llm.client import create_client
 from app.llm import store as llm_store
 from app.kb import client as kb_client
-from app.kb.prompt import SEARCH_TOOL, format_results, collect_kp_ids
+from app.kb.prompt import (
+    SEARCH_TOOL,
+    append_marker_notice,
+    collect_kp_ids,
+    format_results,
+)
 from app import settings_store
 
 logger = logging.getLogger(__name__)
@@ -25,11 +32,19 @@ SYSTEM_PROMPT = """你是一个专业的会计答疑助手，面向会计专业�
 
 回答要求：
 1. 使用清晰的结构化格式（标题、列表、代码块等）
-2. 回答要准确，引用相关会计准则和法规
-3. 涉及会计准则、概念、账务处理、例题时，优先调用知识库检索工具获取资料后再回答
-4. 如果检索到了知识库资料，请基于资料回答，并在回答末尾列出所依据的知识点编号
+2. 涉及会计准则、概念、账务处理、例题时，先调用知识库检索工具取回资料再回答，
+   不要凭记忆直接下结论
+3. 检索到资料后基于资料回答，并在回答末尾列出所依据的知识点编号
+4. 适当举例帮助理解
 5. 如果不确定或资料不足，请诚实说明
-6. 适当举例帮助理解"""
+
+出处纪律（硬约束）：
+- 教材标题、章节名、小节名、知识点编号**只能逐字取自检索结果**，检索结果里没有的
+  一律不得写进回答
+- 准则名称（如《企业会计准则第4号——固定资产》）属通识，可以提及，但不要为其
+  编造条文号、章节号或页码
+- 没有调用检索、或检索结果为空时，**不得声称任何教材依据**（「教材第X章」「据XX讲义」
+  一类措辞全部不要写），直接讲清原理即可"""
 
 # 追问建议指令（仅追加到二轮回答的 system prompt 末尾，见设计文档 §3.3）
 SUGGESTIONS_DELIMITER = "===SUGGESTIONS==="
@@ -42,6 +57,28 @@ SUGGESTIONS_INSTRUCTION = (
 # 降级话术分档（附在答案尾部，随正文落库）
 DEGRADED_SUFFIX = "\n\n> ⚠️ 知识库暂时不可用，本回答未经教材核对。"
 EMPTY_SUFFIX = "\n\n> 知识库中未检索到直接相关内容。"
+
+# consult 的第三种「没资料」标注：DEGRADED 是检索服务挂了，EMPTY 是查了但没命中，
+# 两档都以「查过知识库」为前提。而 consult 由模型自主决定要不要查，实测它会不查
+# 直接答、并顺手编出「《XX教材》第X章」这类出处——学生无从分辨。SYSTEM_PROMPT 的
+# 出处纪律已明令禁止，但提示词不是护栏，这里补一道确定性的：直答正文一旦出现出处
+# 形态的引用，就把「未核对」写进答案末尾（与另两档同一套做法，随正文落库）。
+UNVERIFIED_SUFFIX = "\n\n> ℹ️ 本回答未检索知识库，其中的出处未经教材核对。"
+
+# 只匹配「声称了出处」的形态。寒暄、纯计算讲解不含这些，不该被贴标注；
+# 反之只要写了教材/准则书名号、章号、知识点编号或「根据教材」，就正是需要提醒的情形。
+_SOURCE_CLAIM_RE = re.compile(
+    r"《[^》]{0,50}(?:教材|讲义|准则|制度|解释|指南|手册|大纲)[^》]{0,20}》"
+    r"|第\s*[0-9一二三四五六七八九十]{1,3}\s*章"
+    r"|(?:知识点|考点)\s*[A-Z]{2,}\s*[-－]"
+    r"|根?据\s*(?:教材|课本|讲义|大纲|题库)"
+)
+
+
+def claims_source(text: str) -> bool:
+    """直答正文里是否出现了教材出处形态的引用（见 _SOURCE_CLAIM_RE 注释）"""
+    return bool(text) and _SOURCE_CLAIM_RE.search(text) is not None
+
 
 # 图片题目识别（方案 B）：仅转录，不解答；模型由 VISION_MODEL 配置
 OCR_USER_PROMPT = (
@@ -187,6 +224,7 @@ def stream_chat(
     subject: str,
     user_id: int = 0,
     conversation_id: int | None = None,
+    log_enabled: bool = True,
 ):
     """
     Function Calling 两轮流式调用，逐块 yield 事件：
@@ -199,6 +237,8 @@ def stream_chat(
     - 出错: {"error": "错误信息"}
     model_name 为空时回退到配置中的 CHAT_MODEL。
     user_id/conversation_id 仅用于 kb_search_logs 落库。
+    log_enabled=False 时检索行为不变、只是不落 kb_search_logs（批量评测对照组用，
+    与 solver.run_solve 的同名参数保持一致）。
     """
     settings = get_settings()
     model = model_name or settings.CHAT_MODEL
@@ -219,6 +259,7 @@ def stream_chat(
         tool_calls: dict[int, dict] = {}  # index -> {id, name, arguments}
         finish_reason = None
         round_usage = {"in": 0, "out": 0}
+        direct_text: list[str] = []  # 第 1 轮直答正文，用于判断有没有声称教材出处
 
         for chunk in stream:
             if not chunk.choices:
@@ -229,6 +270,7 @@ def stream_chat(
 
             # 内容增量直接透传
             if delta and delta.content:
+                direct_text.append(delta.content)
                 yield {"content": delta.content}
 
             # 累积 tool_calls 分片（arguments 按 index 拼接）
@@ -256,6 +298,8 @@ def stream_chat(
 
         # 模型直答，无需检索
         if finish_reason != "tool_calls" or not tool_calls:
+            if claims_source("".join(direct_text)):
+                yield {"content": UNVERIFIED_SUFFIX}
             yield {"usage": usage_acc}
             return
 
@@ -275,17 +319,20 @@ def stream_chat(
             top_k=int(args.get("top_k") or 5),
             user_id=user_id,
             conversation_id=conversation_id,
+            log_enabled=log_enabled,
         )
+        results = (kb_data or {}).get("results") or []
         tool_result = format_results(
             kb_data,
             include_answer=settings_store.get_bool("practice_reveal_answer"),
         )
+        if results:
+            tool_result = append_marker_notice(tool_result)
         kp_ids = collect_kp_ids(kb_data)
         if kp_ids:
             yield {"kp_ids": kp_ids}
 
         # 检索命中 → 下发引用卡片摘要（snippet 为 content 前 100 字符）
-        results = (kb_data or {}).get("results") or []
         if results:
             yield {"kb_refs": [
                 {

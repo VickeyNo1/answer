@@ -431,3 +431,42 @@ class AdminWrongStatItem(BaseModel):
     kp_id: str
     wrong_count: int
     student_count: int
+
+
+# ========== 批量评测（单题作答，不落库对话） ==========
+
+
+class EvalAnswerRequest(BaseModel):
+    """单题评测入参
+
+    **刻意只接受题干一个内容字段**：基准题库自带金标准答案与关键得分点，
+    那些字段只能出现在导出文件里供专家对照，一旦进了请求体就等于把答案
+    喂给被测系统，评测结果直接作废。
+
+    intent 取值：
+      - solve  强制走 run_solve 答题链路（默认）。基准题面是书面陈述句，
+               实测 400 题里 86.5% 会被 classify_intent 判成 consult，而
+               consult 路径没有三档命中、不碰题库，评测不到答题能力。
+      - auto   按 classify_intent 分流，作对照组，用于量化上面这个偏差。
+    """
+    question: str
+    subject: str = "cpa_acc"
+    intent: str = "solve"
+
+
+class EvalAnswerOut(BaseModel):
+    """单题评测结果：档位与用量均为结构化字段，供脚本写 checkpoint 与导出"""
+    question: str
+    intent: str
+    tier: str | None = None
+    question_id: str | None = None
+    verify_reason: str = ""
+    answer: str = ""
+    kb_refs: list[dict] = []
+    kp_ids: list[str] = []
+    suggestions: list[str] = []
+    model: str = ""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    elapsed_ms: int = 0
+    error: str | None = None

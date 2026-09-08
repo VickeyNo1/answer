@@ -55,6 +55,28 @@ SOLVE_PREFERRED_TYPES = ("example", "entry", "formula", "table")
 # 剪裁答案时的占位提示：让模型知道答案存在但拿不到，从而引导学生先自行作答
 ANSWER_OMITTED_HINT = "（参考答案与解析已省略，请先自行作答）"
 
+# 标头行防泄漏：线上实测模型把「【题目2｜ACC-2025-Q-5.10｜multiple_choice｜知识点 …】」
+# 原样抄进了给学生的答案里。标头是给模型定位资料用的内部索引，学生看到只会一头雾水。
+# 必须**紧跟在资料之后**追加（两条作答路径的资料位置不同：solve/practice 在 system
+# prompt 中段，consult 在独立的 tool 消息里），用「上方」指代才都成立。
+MARKER_NOTICE = """
+
+【内部标头不外泄】上方资料里形如「【题目1｜ACC-2025-Q-5.10｜multiple_choice｜知识点 ACC-05-02-01】」
+「【资料2｜例题｜知识点 ACC-21-01-01｜第21章 租赁 · 第1节｜融资租赁的判断】」的标头行，
+只是给你定位资料用的内部索引，不是学生要看的正文。回答中**不要复制这些标头行**，
+也不要沿用它的竖线分隔格式；需要说明依据时用自然语言写章节与知识点编号，
+例如「依据第21章 租赁（知识点 ACC-21-01-01）」。"""
+
+
+def append_marker_notice(context: str) -> str:
+    """在拼好的检索资料末尾追加 MARKER_NOTICE
+
+    刻意不放进 format_results：solve 的 similar/none 档会把题库与教材两段资料拼在一起，
+    放进去等于同一份 prompt 里说两遍；且 format_results 空结果时返回 FALLBACK_TEXT，
+    那时根本没有标头行可交代。
+    """
+    return context + MARKER_NOTICE
+
 
 def _kp_label(kp_ids: list | None) -> str:
     """知识点标注：为空时标「未标注」"""

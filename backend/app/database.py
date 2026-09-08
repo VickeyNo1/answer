@@ -87,13 +87,13 @@ TABLES_SQL = [
     """CREATE TABLE IF NOT EXISTS usage_logs (
         id INT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
         model_name VARCHAR(64) NOT NULL COMMENT '使用的模型名',
-        user_id INT NULL COMMENT '发起用户 ID（可空）',
+        user_id INT NULL COMMENT '发起用户 ID（可空；批量评测行一律为 NULL，不把开销挂到任何学生头上）',
         conversation_id INT NULL COMMENT '所属会话 ID（可空）',
         prompt_tokens INT NOT NULL DEFAULT 0 COMMENT '输入 token 数（Function Calling 两轮累加）',
         completion_tokens INT NOT NULL DEFAULT 0 COMMENT '输出 token 数（Function Calling 两轮累加）',
         total_tokens INT NOT NULL DEFAULT 0 COMMENT '总 token 数',
         cost DOUBLE NOT NULL DEFAULT 0 COMMENT '费用（元）= tokens/1000 × 单价',
-        task_type VARCHAR(16) NOT NULL DEFAULT 'chat' COMMENT '任务类型：chat=对话/exam=判卷/profile=画像总结/ocr=图片识别/verify=题目同一性校验',
+        task_type VARCHAR(16) NOT NULL DEFAULT 'chat' COMMENT '任务类型：chat=对话/exam=判卷/profile=画像总结/ocr=图片识别/verify=题目同一性校验/eval=批量评测',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
         INDEX idx_usage_created (created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='大模型用量与费用日志表'""",
@@ -192,7 +192,7 @@ EXTRA_COLUMNS = {
     "usage_logs": {
         "task_type": (
             "ALTER TABLE usage_logs ADD COLUMN task_type VARCHAR(16) NOT NULL DEFAULT 'chat' "
-            "COMMENT '任务类型：chat=对话/exam=判卷/profile=画像总结/ocr=图片识别/verify=题目同一性校验'"
+            "COMMENT '任务类型：chat=对话/exam=判卷/profile=画像总结/ocr=图片识别/verify=题目同一性校验/eval=批量评测'"
         ),
     },
 }

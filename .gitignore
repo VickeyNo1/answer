@@ -12,6 +12,9 @@ wheels/
 backend/data/
 backend/uploads/
 
+# 批量评测输出（含锁定基准集的金标准与 agent 作答，均不得入库）
+backend/eval_out/
+
 # ===== 环境变量 =====
 .env
 *.env

@@ -7,6 +7,9 @@
 - 认证/参数校验
 - v4.1 意图三分流：solve → solver.run_solve、practice → solver.run_practice、
   consult 仍走 stream_chat；run_solve 的 match 事件被转发为 SSE
+- consult 二轮 tool 消息的 prompt 组装（标头防泄漏说明，不依赖数据库）
+- consult 出处纪律：直答跳过检索却声称教材出处时的末尾标注 + SYSTEM_PROMPT 硬约束
+  （P1-D，不依赖数据库）
 
 ⚠️ 前两组（TestChatDirectAnswer / TestChatToolCall）同时是 `stream_answer` 抽取
 重构的护栏：那 8 个用例必须全绿，任一挂了就说明抽取改变了外部行为。
@@ -74,8 +77,10 @@ class FakeCompletions:
         """streams: list of iterables（每次 create() 消费一个）"""
         self._streams = list(streams)
         self._idx = 0
+        self.calls: list[dict] = []
 
     def create(self, **kwargs):
+        self.calls.append(kwargs)
         stream = self._streams[self._idx]
         self._idx += 1
         return iter(stream)
@@ -206,7 +211,7 @@ class TestChatToolCall:
     @pytest.fixture(autouse=True)
     def _mock(self, monkeypatch):
         def fake_search(query, subject, collection="textbook", top_k=5,
-                        user_id=0, conversation_id=None):
+                        user_id=0, conversation_id=None, log_enabled=True):
             assert subject == "cpa_acc"  # subject 由后端注入
             return {
                 "code": 0,
@@ -366,3 +371,199 @@ class TestChatIntentRouting:
                 "ORDER BY id DESC LIMIT 1"
             ).fetchone()
         assert row["prompt_tokens"] == 3 and row["completion_tokens"] == 4
+
+
+# ===== 场景 4：consult 二轮 tool 消息（不依赖数据库） =====
+
+class TestConsultToolResult:
+    """直接驱动 stream_chat 生成器，只看发给模型的第二轮 messages
+
+    刻意不用 client/student_headers 夹具：本组验的是 prompt 组装，不碰会话与落库，
+    MySQL 不可达时也应当跑（见 AGENTS.md §5「纯函数/生成器类用例不依赖 DB」）。
+    """
+
+    def _run(self, monkeypatch, kb_data):
+        from app.chat import qwen_service
+        fake = FakeClient(_tool_call_streams())
+        monkeypatch.setattr(qwen_service, "create_client", lambda: fake)
+        monkeypatch.setattr(qwen_service.kb_client, "search", lambda *a, **kw: kb_data)
+        events = list(qwen_service.stream_chat(
+            [{"role": "system", "content": qwen_service.SYSTEM_PROMPT},
+             {"role": "user", "content": "存货怎么计价？"}],
+            "m", "cpa_acc",
+        ))
+        return fake.chat.completions.calls, events
+
+    def test_tool_message_carries_marker_notice(self, monkeypatch):
+        """P1-B：线上实测模型把「【资料1｜…】」标头行原样抄进了给学生的答案
+
+        说明必须**紧跟在资料之后**，「上方资料」的指代才成立。
+        """
+        from app.kb.prompt import MARKER_NOTICE
+        calls, _ = self._run(monkeypatch, {
+            "collection": "textbook",
+            "results": [{"knowledge_point_ids": ["KP-001"], "chapter": "第一章",
+                         "section": "第一节", "title": "存货计价",
+                         "content": "存货应按成本计量。"}],
+        })
+        content = calls[1]["messages"][-1]["content"]
+        assert calls[1]["messages"][-1]["role"] == "tool"
+        assert "【资料1｜" in content
+        assert MARKER_NOTICE in content
+        assert content.index("【资料1｜") < content.index(MARKER_NOTICE)
+
+    def test_empty_kb_result_gets_no_marker_notice(self, monkeypatch):
+        """空结果时 tool 内容是 FALLBACK_TEXT，压根没有标头行，不该附说明"""
+        from app.kb.prompt import FALLBACK_TEXT, MARKER_NOTICE
+        calls, _ = self._run(monkeypatch, {"collection": "textbook", "results": []})
+        content = calls[1]["messages"][-1]["content"]
+        assert content == FALLBACK_TEXT
+        assert MARKER_NOTICE not in content
+
+
+# ===== 场景 5：consult 出处纪律（P1-D，不依赖数据库） =====
+
+class TestClaimsSource:
+    """`claims_source` 的判定边界：只在正文**声称了教材出处**时为真
+
+    判假的代价是漏贴标注（退回到修复前的行为），判真的代价是给闲聊贴一句废话，
+    所以两侧都要有明确用例钉住，别日后为了多抓一种形态把寒暄也扫进来。
+    """
+
+    @pytest.mark.parametrize("text", [
+        "根据《企业会计准则第4号——固定资产》的规定，折旧应当……",
+        "《初级会计实务教材》对此有明确说明。",
+        "详见教材第21章。",
+        "第三章讲了权责发生制。",
+        "依据知识点 ACC-21-01-01，融资租赁应确认为……",
+        "该考点 ACC-05-02-01 近年常考。",
+        "根据教材，存货应按成本计量。",
+        "据讲义所述，该处理不正确。",
+    ])
+    def test_positive(self, text):
+        from app.chat import qwen_service
+        assert qwen_service.claims_source(text)
+
+    @pytest.mark.parametrize("text", [
+        "",
+        "你好！有什么可以帮你？",
+        "1 + 1 等于 2。",
+        "折旧额 = 100 × 40% = 40 万元，最后两年改用年限平均法。",
+        # 学生自己贴的案例材料，模型说「根据资料」不是编造教材出处
+        "根据资料中给出的入账价值，第一年折旧为 40 万元。",
+    ])
+    def test_negative(self, text):
+        from app.chat import qwen_service
+        assert not qwen_service.claims_source(text)
+
+
+class TestConsultUnverifiedSuffix:
+    """模型跳过检索直接作答时的末尾标注（P1-D 的确定性护栏）"""
+
+    def _run(self, monkeypatch, round1_chunks):
+        from app.chat import qwen_service
+        fake = FakeClient([list(round1_chunks)])
+        monkeypatch.setattr(qwen_service, "create_client", lambda: fake)
+        events = list(qwen_service.stream_chat(
+            [{"role": "system", "content": qwen_service.SYSTEM_PROMPT},
+             {"role": "user", "content": "存货怎么计价？"}],
+            "m", "cpa_acc",
+        ))
+        return "".join(e.get("content", "") for e in events), events
+
+    def test_fabricated_source_gets_suffix(self, monkeypatch):
+        from app.chat import qwen_service
+        text, events = self._run(monkeypatch, [
+            FakeChunk(content="根据《中级会计教材》第5章，"),
+            FakeChunk(content="存货应按成本计量。", finish_reason="stop",
+                      usage=FakeUsage(prompt_tokens=9, completion_tokens=4)),
+        ])
+        assert text.endswith(qwen_service.UNVERIFIED_SUFFIX)
+        # 确实没查过知识库：这正是标注要说的事
+        assert not [e for e in events if "kb_search" in e]
+        assert events[-1]["usage"] == {"prompt_tokens": 9, "completion_tokens": 4}
+
+    def test_plain_direct_answer_gets_no_suffix(self, monkeypatch):
+        """寒暄与纯计算不该被贴标注，否则每条闲聊都多一句废话"""
+        from app.chat import qwen_service
+        text, _ = self._run(monkeypatch, [
+            FakeChunk(content="1 + 1 "),
+            FakeChunk(content="等于 2。", finish_reason="stop",
+                      usage=FakeUsage(prompt_tokens=9, completion_tokens=4)),
+        ])
+        assert text == "1 + 1 等于 2。"
+        assert qwen_service.UNVERIFIED_SUFFIX not in text
+
+    def test_source_claim_split_across_chunks(self, monkeypatch):
+        """出处形态跨块到达也要认出来——流式分片切在哪我们说了不算"""
+        from app.chat import qwen_service
+        text, _ = self._run(monkeypatch, [
+            FakeChunk(content="详见《企业会计准"),
+            FakeChunk(content="则第4号——固定资产》。", finish_reason="stop",
+                      usage=FakeUsage(prompt_tokens=1, completion_tokens=1)),
+        ])
+        assert text.endswith(qwen_service.UNVERIFIED_SUFFIX)
+
+    def test_retrieval_path_never_uses_this_suffix(self, monkeypatch):
+        """查过知识库就归 DEGRADED/EMPTY 两档，第三种标注不得混进来"""
+        from app.chat import qwen_service
+        fake = FakeClient(_tool_call_streams())
+        monkeypatch.setattr(qwen_service, "create_client", lambda: fake)
+        monkeypatch.setattr(qwen_service.kb_client, "search",
+                            lambda *a, **kw: {"collection": "textbook", "results": []})
+        events = list(qwen_service.stream_chat(
+            [{"role": "system", "content": qwen_service.SYSTEM_PROMPT},
+             {"role": "user", "content": "存货怎么计价？"}],
+            "m", "cpa_acc",
+        ))
+        text = "".join(e.get("content", "") for e in events)
+        assert qwen_service.UNVERIFIED_SUFFIX not in text
+        assert text.endswith(qwen_service.EMPTY_SUFFIX)
+
+    def test_three_no_context_suffixes_are_distinct(self):
+        """「没查」「查挂了」「查空了」三态必须可区分，否则运维报表无法归因"""
+        from app.chat import qwen_service as q
+        assert len({q.UNVERIFIED_SUFFIX, q.DEGRADED_SUFFIX, q.EMPTY_SUFFIX}) == 3
+
+
+class TestConsultSourceDisciplinePrompt:
+    """SYSTEM_PROMPT 的出处纪律（P1-D 的提示词侧修复）"""
+
+    def test_forbids_inventing_sources(self):
+        from app.chat import qwen_service
+        prompt = qwen_service.SYSTEM_PROMPT
+        assert "只能逐字取自检索结果" in prompt
+        assert "不得声称任何教材依据" in prompt
+        assert "编造" in prompt           # 准则名可提，条文号不许编
+
+    def test_retrieval_no_longer_worded_as_optional(self):
+        """旧措辞「优先调用」被模型读成可不调用——这是实测跳过检索的直接原因"""
+        from app.chat import qwen_service
+        assert "优先调用" not in qwen_service.SYSTEM_PROMPT
+
+    def test_discipline_is_consult_only(self):
+        """solve/practice 的资料由后端确定性注入，不适用「先调用检索工具」这套措辞"""
+        from app.chat import solver
+        for prompt in (solver.SOLVE_SYSTEM_PROMPT, solver.PRACTICE_SYSTEM_PROMPT):
+            assert "出处纪律" not in prompt
+
+    def test_round2_system_message_keeps_discipline(self, monkeypatch):
+        """编造发生在二轮，纪律必须原样带到二轮 system（只在其后追加建议指令）"""
+        from app.chat import qwen_service
+        fake = FakeClient(_tool_call_streams())
+        monkeypatch.setattr(qwen_service, "create_client", lambda: fake)
+        monkeypatch.setattr(qwen_service.kb_client, "search", lambda *a, **kw: {
+            "collection": "textbook",
+            "results": [{"knowledge_point_ids": ["KP-001"], "chapter": "第一章",
+                         "section": "第一节", "title": "存货计价",
+                         "content": "存货应按成本计量。"}],
+        })
+        list(qwen_service.stream_chat(
+            [{"role": "system", "content": qwen_service.SYSTEM_PROMPT},
+             {"role": "user", "content": "存货怎么计价？"}],
+            "m", "cpa_acc",
+        ))
+        round2_system = fake.chat.completions.calls[1]["messages"][0]["content"]
+        assert round2_system.startswith(qwen_service.SYSTEM_PROMPT)
+        assert round2_system.endswith(qwen_service.SUGGESTIONS_INSTRUCTION)
+        assert "出处纪律" in round2_system

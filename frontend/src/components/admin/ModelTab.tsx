@@ -233,7 +233,7 @@ export function ModelTab() {
                         >
                           编辑
                         </button>
-                        {confirmDeleteId === m.id ? (
+                        {!m.is_active && (confirmDeleteId === m.id ? (
                           <>
                             <button
                               onClick={() => handleDelete(m.id)}
@@ -255,7 +255,7 @@ export function ModelTab() {
                           >
                             删除
                           </button>
-                        )}
+                        ))}
                       </div>
                     </td>
                   </tr>

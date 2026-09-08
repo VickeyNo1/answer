@@ -31,8 +31,29 @@ def _log_search(
     kp_ids: list[str],
     status: str,
     elapsed_ms: int,
+    enabled: bool = True,
 ) -> None:
-    """写 kb_search_logs（检索可观测）；写失败吞掉异常，不影响主链路"""
+    """写 kb_search_logs（检索可观测）；写失败吞掉异常，不影响主链路
+
+    enabled=False 时**只打日志、不落库**：批量评测跑 400 题 × 2 次检索会往
+    kb_search_logs 灌 800 行，污染给使用方看的检索质量报表。日志本身对排查
+    批量跑有用，要抑制的只是报表数据，故开关卡在落库前而非函数首行。
+    """
+    # 日志分级：info（ok/empty）/ warning（timeout/http_error/code_error）/ error（degraded）
+    line = (
+        f"kb_search status={status} subject={subject} collection={collection} "
+        f"query={query[:50]!r} results={result_count} elapsed={elapsed_ms}ms"
+    )
+    if status in ("ok", "empty"):
+        logger.info(line)
+    elif status == "degraded":
+        logger.error(line)
+    else:
+        logger.warning(line)
+
+    if not enabled:
+        return
+
     try:
         with get_db_ctx() as db:
             db.execute(
@@ -51,18 +72,6 @@ def _log_search(
     except Exception as e:
         logger.warning("kb_search_logs 写入失败（不影响主链路）: %s", e)
 
-    # 日志分级：info（ok/empty）/ warning（timeout/http_error/code_error）/ error（degraded）
-    line = (
-        f"kb_search status={status} subject={subject} collection={collection} "
-        f"query={query[:50]!r} results={result_count} elapsed={elapsed_ms}ms"
-    )
-    if status in ("ok", "empty"):
-        logger.info(line)
-    elif status == "degraded":
-        logger.error(line)
-    else:
-        logger.warning(line)
-
 
 def search(
     query: str,
@@ -71,6 +80,7 @@ def search(
     top_k: int = 5,
     user_id: int = 0,
     conversation_id: int | None = None,
+    log_enabled: bool = True,
 ) -> dict | None:
     """
     调用知识库检索接口。
@@ -79,6 +89,9 @@ def search(
     - 5001/超时/网络异常重试 1 次，仍失败返回 None（调用方降级为大模型直答）
     每次尝试均记录 kb_search_logs：ok/empty=成功；timeout/http_error/code_error=单次失败；
     degraded=重试后仍失败（最终降级）。
+
+    log_enabled=False 时检索行为完全不变，只是不写 kb_search_logs（批量评测专用，
+    见 _log_search）。
     """
     settings = get_settings()
     url = f"{settings.KB_BASE_URL.rstrip('/')}/kb/search"
@@ -107,6 +120,7 @@ def search(
                     user_id, conversation_id, subject, collection, query,
                     len(results), collect_kp_ids(data),
                     "ok" if results else "empty", elapsed_ms,
+                    enabled=log_enabled,
                 )
                 return data
             if resp.status_code == 400:
@@ -114,6 +128,7 @@ def search(
                 _log_search(
                     user_id, conversation_id, subject, collection, query,
                     0, [], "http_error", elapsed_ms,
+                    enabled=log_enabled,
                 )
                 return None
             # 5001 等内部错误 → 进入下一次重试
@@ -126,6 +141,7 @@ def search(
         _log_search(
             user_id, conversation_id, subject, collection, query,
             0, [], fail_status if attempt == 0 else "degraded", elapsed_ms,
+            enabled=log_enabled,
         )
     return None
 

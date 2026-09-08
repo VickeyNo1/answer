@@ -2,8 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import { apiPost } from "@/lib/api";
+import { normalizeMathDelimiters } from "@/lib/markdown";
 import type { MessageOut, KbRef } from "@/types";
 
 interface ChatWindowProps {
@@ -145,11 +148,7 @@ export function ChatWindow({
                     <KbRefsCard refs={streamingKbRefs} />
                   )}
                   {streamingContent ? (
-                    <div className="prose prose-chat max-w-none">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {streamingContent}
-                      </ReactMarkdown>
-                    </div>
+                    <AnswerMarkdown content={streamingContent} />
                   ) : (
                     <div className="flex items-center gap-1 py-1">
                       <span className="h-2 w-2 animate-bounce rounded-full bg-gray-400 [animation-delay:-0.3s]"></span>
@@ -175,6 +174,22 @@ export function ChatWindow({
           }}
         />
       )}
+    </div>
+  );
+}
+
+/** AI 回答的 Markdown 渲染（含 LaTeX 公式） */
+function AnswerMarkdown({ content }: { content: string }) {
+  return (
+    <div className="prose prose-chat max-w-none">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        // throwOnError:false —— KaTeX 在渲染期抛错会让整条气泡白屏；流式过程中
+        // 公式分隔符尚未闭合是常态，宁可原样显示也不能丢答案。
+        rehypePlugins={[[rehypeKatex, { throwOnError: false }]]}
+      >
+        {normalizeMathDelimiters(content)}
+      </ReactMarkdown>
     </div>
   );
 }
@@ -215,11 +230,7 @@ function MessageBubble({
           ) : (
             <>
               {kbRefs && kbRefs.length > 0 && <KbRefsCard refs={kbRefs} />}
-              <div className="prose prose-chat max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {message.content}
-                </ReactMarkdown>
-              </div>
+              <AnswerMarkdown content={message.content} />
               {/* 👍/👎 反馈按钮（已评过显示选中态，可再点覆盖更新） */}
               <div className="mt-2 flex items-center gap-1 border-t border-gray-100 pt-1.5">
                 <button

@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+// KaTeX 公式样式（含字体）；外部包样式表按 Next CSS 指南在 app 根导入
+import "katex/dist/katex.min.css";
 import { AuthGuard } from "@/components/AuthGuard";
 
 const geistSans = Geist({

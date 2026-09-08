@@ -7,11 +7,17 @@ practice 由本模块**确定性**执行检索——拍照上传的题目过去�
 solve 三档（**全部产出完整解答**，区别只在依据强度与末尾标注）：
 
 - exact   题库命中原题（LLM 二次校验 same=true）→ 喂权威参考答案，跳过教材检索
-- similar 题库只有相似题（校验 same=false 或校验失败）→ 喂相似题作范例 + 教材，严禁照搬
-- none    题库无结果 → 教材定向检索（prefer="solve"），据准则独立推导
+- similar 题库只有相似题（校验 same=false 但指认了相关候选）→ 只喂被指认的那几道作范例
+          + 教材，严禁照搬
+- none    题库无结果，**或候选经校验判定与本题无关** → 教材定向检索（prefer="solve"），
+          据准则独立推导
 
-**不用 match_score 阈值判档**：doc/知识库对接文档.md §1.3 明确 score「仅用于排序，
-不同请求间不可比」，任何固定阈值方案都建立在错误前提上。故以 LLM 二次校验为主判据。
+**不用 match_score 阈值判档，也不用它做相关性下限**：doc/知识库对接文档.md §1.3 明确
+score「仅用于排序，不同请求间不可比」，任何固定阈值方案都建立在错误前提上。而检索服务
+本身**没有相关性下限**——乱码 query 也会返回满 top_k 条（实测 score 恒为 1.0/0.5/0.333
+这类归一化排序分），所以「题库返回了结果」并不等于「题库里有相关的题」。两件事都只能
+交给 LLM 二次校验：同一次调用既判同一性（定 exact），又指认哪几道值得作参考
+（relevant_indexes），**零额外成本**。
 
 检索资料注入 system prompt，不伪造 assistant tool_calls —— 本轮只做一次不带工具的
 生成，用不上 tool 消息协议，少一层供应商兼容性风险。
@@ -29,7 +35,12 @@ from app.chat.qwen_service import (
     stream_answer,
 )
 from app.kb import client as kb_client
-from app.kb.prompt import collect_kp_ids, format_results, sub_question_text
+from app.kb.prompt import (
+    append_marker_notice,
+    collect_kp_ids,
+    format_results,
+    sub_question_text,
+)
 from app.llm import store as llm_store
 from app.llm.client import create_client
 
@@ -62,8 +73,9 @@ SIMILAR_BLOCK = """
 
 NONE_BLOCK = """
 
-【本题命中情况】题库与教材均未直接命中本题。
-请依据企业会计准则独立求解，给出完整推理步骤与最终答案，并在关键假设处说明依据。"""
+【本题命中情况】题库中没有可用于参考本题的题目。
+若下方附有教材资料，请以其为准则依据；否则依据企业会计准则独立求解。
+两种情况都必须给出完整推理步骤与最终答案，并在关键假设处说明依据。"""
 
 # 档位标注：附在答案末尾随正文落库，是本轮唯一的档位可见性手段（前端零改动）
 EXACT_SUFFIX = "\n\n> ✅ 本题已在题库中找到原题，以上解答以题库参考答案为依据。"
@@ -114,14 +126,20 @@ def system_prompt_for(intent: str) -> str | None:
 
 # ========== LLM 二次校验（题目同一性） ==========
 
-VERIFY_SYSTEM_PROMPT = """你是题目比对助手。判断学生提问的题目与候选题库题目是否为**同一道题**。
+VERIFY_SYSTEM_PROMPT = """你是题目比对助手。对学生提问的题目与候选题库题目做两项判断：
 
+一、**同一性**：候选里有没有和学生问的是**同一道题**。
 判定标准：考查同一业务场景、同一数据、同一问法才算同一道题。
 仅知识点相同、题型相同，但数据或问法不同的，不算同一道题。
 
+二、**相关性**：候选里哪几道与本题**同一知识点或同一业务领域**，值得作为解题思路参考。
+知识库检索没有相关性下限，无关候选也会被一并返回；把不同章节、不同业务的题目当范例
+会污染作答。判定口径要宽松：同知识点但数据或问法不同的**应当列入**（这正是相似题的
+价值所在），只有与本题明显不同章节、不同业务的才排除。都不相关时输出空数组。
+
 只输出一个 JSON 对象，不要输出任何其他内容，格式：
-{"same": true, "index": 1, "reason": "不超过40字的判定依据"}
-same 为 false 时 index 输出 null。"""
+{"same": true, "index": 1, "relevant_indexes": [1, 2], "reason": "不超过40字的判定依据"}
+same 为 false 时 index 输出 null；没有相关候选时 relevant_indexes 输出 []。"""
 
 
 def build_verify_prompt(question_text: str, candidates: list[dict]) -> str:
@@ -146,13 +164,34 @@ def build_verify_prompt(question_text: str, candidates: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
+def _parse_relevant_indexes(value) -> list[int] | None:
+    """解析 relevant_indexes；缺失或不是数组一律 None（无信号），而非 []（明确无相关）
+
+    越界裁剪交给调用方——本函数不知道候选有几条。
+    """
+    if not isinstance(value, (list, tuple)):
+        return None
+    out: list[int] = []
+    for item in value:
+        try:
+            idx = int(item)
+        except (TypeError, ValueError):
+            continue
+        if idx not in out:
+            out.append(idx)
+    return out
+
+
 def parse_verify_result(text: str) -> dict:
     """解析校验 JSON；任何解析失败一律返回 same=False
 
     代价不对称：误报 exact 会让学生拿着别人的答案去考试；漏报最多退到 similar 档，
     仍有相似题与教材可依。故一律取保守。
+
+    `relevant_indexes` 的 None 与 [] 是两种不同信号，别合并：None = 没拿到相关性判断
+    （沿用旧的保守行为），[] = 模型明确说候选里没有一道与本题相关（触发相关性下限）。
     """
-    fallback = {"same": False, "index": None, "reason": ""}
+    fallback = {"same": False, "index": None, "relevant_indexes": None, "reason": ""}
     start = text.find("{")
     end = text.rfind("}")
     if start == -1 or end <= start:
@@ -164,14 +203,15 @@ def parse_verify_result(text: str) -> dict:
     if not isinstance(data, dict):
         return fallback
     reason = str(data.get("reason") or "").strip()
+    relevant = _parse_relevant_indexes(data.get("relevant_indexes"))
     if not data.get("same"):
-        return {"same": False, "index": None, "reason": reason}
+        return {"same": False, "index": None, "relevant_indexes": relevant, "reason": reason}
     try:
         index = int(data.get("index"))
     except (TypeError, ValueError):
         # 声称 same 却没给有效 index，无法定位到具体题目 → 保守降级
-        return {"same": False, "index": None, "reason": reason}
-    return {"same": True, "index": index, "reason": reason}
+        return {"same": False, "index": None, "relevant_indexes": relevant, "reason": reason}
+    return {"same": True, "index": index, "relevant_indexes": relevant, "reason": reason}
 
 
 def _record_verify_usage(resp, model: str, user_id: int,
@@ -192,13 +232,14 @@ def _record_verify_usage(resp, model: str, user_id: int,
 def verify_same_question(question_text: str, candidates: list[dict],
                          user_id: int = 0, conversation_id: int | None = None,
                          model_name: str | None = None) -> dict:
-    """LLM 二次校验：候选题里有没有学生问的那道题
+    """LLM 二次校验：候选题里有没有学生问的那道题，以及哪几道值得作参考
 
-    返回 {"same": bool, "index": int|None, "reason": str}。
-    任何异常/解析失败一律 same=False（由调用方归入 similar 档）。
+    返回 {"same": bool, "index": int|None, "relevant_indexes": list[int]|None, "reason": str}。
+    任何异常/解析失败一律 same=False（由调用方归入 similar 档）；此时 relevant_indexes
+    为 **None**（没拿到相关性信号），刻意区别于 [] （模型明确判定都不相关）。
     """
     if not candidates:
-        return {"same": False, "index": None, "reason": "无候选题"}
+        return {"same": False, "index": None, "relevant_indexes": [], "reason": "无候选题"}
     try:
         model = model_name or llm_store.get_model_for("verify")
         client = create_client()
@@ -212,10 +253,19 @@ def verify_same_question(question_text: str, candidates: list[dict],
         )
         content = resp.choices[0].message.content or ""
         _record_verify_usage(resp, model, user_id, conversation_id)
-        return parse_verify_result(content)
+        result = parse_verify_result(content)
+        indexes = result["relevant_indexes"]
+        if indexes:
+            # 全部越界 = 信号不可用（模型幻觉了序号），按「无信号」处理而非「明确无相关」，
+            # 否则会白白丢掉可用的相似题参考
+            result["relevant_indexes"] = [
+                i for i in indexes if 1 <= i <= len(candidates)
+            ] or None
+        return result
     except Exception as e:
         logger.warning("题目同一性校验失败，按相似题处理: %s", e)
-        return {"same": False, "index": None, "reason": f"校验失败：{e}"}
+        return {"same": False, "index": None, "relevant_indexes": None,
+                "reason": f"校验失败：{e}"}
 
 
 # ========== 上下文拼装辅助 ==========
@@ -272,13 +322,17 @@ def _build_answer_messages(messages: list[dict], block: str, context: str) -> li
 # ========== solve 流水线 ==========
 
 def run_solve(messages: list[dict], model_name: str | None, subject: str,
-              user_id: int = 0, conversation_id: int | None = None,
-              query_text: str = ""):
+              user_id: int | None = 0, conversation_id: int | None = None,
+              query_text: str = "", log_enabled: bool = True):
     """solve 意图的确定性检索阶梯 + 单次流式作答
 
     事件词汇与 qwen_service.stream_chat 完全一致，另加 {"match": {...}}
     （前端 lib/sse.ts 的 switch 无 default 分支，未知事件静默忽略，不会炸前端；
-    下一轮批量答题工具直接消费该事件拿结构化档位）。
+    批量答题工具直接消费该事件拿结构化档位）。
+
+    log_enabled=False 供批量评测使用：检索行为不变，但两次检索都不写
+    kb_search_logs。user_id 可为 None（usage_logs 该列可空且无外键），
+    评测用量因此不挂到任何真实学生头上。
     """
     settings = get_settings()
     model = model_name or settings.CHAT_MODEL
@@ -294,11 +348,12 @@ def run_solve(messages: list[dict], model_name: str | None, subject: str,
         q_data = kb_client.search(
             query=query, subject=subject, collection="questions", top_k=3,
             user_id=user_id, conversation_id=conversation_id,
+            log_enabled=log_enabled,
         )
         q_results = (q_data or {}).get("results") or []
 
         # ===== 第 2 步：LLM 二次校验定档 =====
-        tier, matched = "none", None
+        tier, matched, ref_questions = "none", None, []
         verify = {"same": False, "index": None, "reason": ""}
         if q_results:
             verify = verify_same_question(query, q_results, user_id, conversation_id)
@@ -307,7 +362,19 @@ def run_solve(messages: list[dict], model_name: str | None, subject: str,
             if verify.get("same") and isinstance(idx, int) and 1 <= idx <= len(q_results):
                 tier, matched = "exact", q_results[idx - 1]
             else:
-                tier = "similar"
+                # 相关性下限：检索服务没有下限（乱码 query 也返回 top_k），score 又只是
+                # 重排后的排序分、跨请求不可比，故只能由校验模型指认哪几道真与本题同领域。
+                indexes = verify.get("relevant_indexes")
+                if indexes is None:
+                    # 没拿到相关性信号（校验失败/字段缺失）→ 沿用旧的保守行为，全量注入
+                    tier, ref_questions = "similar", q_results
+                else:
+                    picked = [q_results[i - 1] for i in indexes if 1 <= i <= len(q_results)]
+                    if picked:
+                        tier, ref_questions = "similar", picked
+                    else:
+                        # 明确判定候选与本题无关 → 不注入噪声，走 none 档独立推导
+                        tier = "none"
 
         yield {"match": {
             "tier": tier,
@@ -331,14 +398,14 @@ def run_solve(messages: list[dict], model_name: str | None, subject: str,
         else:
             if tier == "similar":
                 parts.append(format_results(
-                    {"collection": "questions", "results": q_results},
+                    {"collection": "questions", "results": ref_questions},
                     include_answer=True, heading=SIMILAR_HEADING,
                 ))
-                refs.extend(_question_ref(r) for r in q_results)
-                for kp in collect_kp_ids(q_data):
+                refs.extend(_question_ref(r) for r in ref_questions)
+                for kp in collect_kp_ids({"results": ref_questions}):
                     if kp not in kp_ids:
                         kp_ids.append(kp)
-                text_query = _topic_query(q_results, query)
+                text_query = _topic_query(ref_questions, query)
                 top_k, prefer = 5, None
             else:
                 text_query, top_k, prefer = query, 8, "solve"
@@ -346,6 +413,7 @@ def run_solve(messages: list[dict], model_name: str | None, subject: str,
             t_data = kb_client.search(
                 query=text_query, subject=subject, collection="textbook", top_k=top_k,
                 user_id=user_id, conversation_id=conversation_id,
+                log_enabled=log_enabled,
             )
             t_results = (t_data or {}).get("results") or []
             if t_results:
@@ -372,7 +440,7 @@ def run_solve(messages: list[dict], model_name: str | None, subject: str,
             suffix = NONE_SUFFIX
 
         if parts:
-            context = "\n\n".join(parts)
+            context = append_marker_notice("\n\n".join(parts))
         else:
             context = KB_DOWN_TEXT if degraded else NO_CONTEXT_TEXT
 
@@ -398,8 +466,12 @@ def run_solve(messages: list[dict], model_name: str | None, subject: str,
 # ========== practice 流水线 ==========
 
 def run_practice(messages: list[dict], model_name: str | None, subject: str,
-                 user_id: int = 0, conversation_id: int | None = None):
-    """practice 意图：只出题不给答案（受 practice_reveal_answer 开关控制）"""
+                 user_id: int | None = 0, conversation_id: int | None = None,
+                 log_enabled: bool = True):
+    """practice 意图：只出题不给答案（受 practice_reveal_answer 开关控制）
+
+    log_enabled 与 run_solve 同名参数语义一致，供批量评测抑制 kb_search_logs。
+    """
     settings = get_settings()
     model = model_name or settings.CHAT_MODEL
     reveal = settings_store.get_bool("practice_reveal_answer")
@@ -413,6 +485,7 @@ def run_practice(messages: list[dict], model_name: str | None, subject: str,
         data = kb_client.search(
             query=query, subject=subject, collection="questions", top_k=5,
             user_id=user_id, conversation_id=conversation_id,
+            log_enabled=log_enabled,
         )
         results = (data or {}).get("results") or []
 
@@ -422,7 +495,7 @@ def run_practice(messages: list[dict], model_name: str | None, subject: str,
 
         if results:
             refs = [_question_ref(r) for r in results]
-            context = format_results(data, include_answer=reveal)
+            context = append_marker_notice(format_results(data, include_answer=reveal))
             block = PRACTICE_REVEAL_BLOCK if reveal else ""
             suffix = PRACTICE_SUFFIX
         else:
@@ -430,6 +503,7 @@ def run_practice(messages: list[dict], model_name: str | None, subject: str,
             t_data = kb_client.search(
                 query=query, subject=subject, collection="textbook", top_k=5,
                 user_id=user_id, conversation_id=conversation_id,
+                log_enabled=log_enabled,
             )
             t_results = (t_data or {}).get("results") or []
             for kp in collect_kp_ids(t_data):
@@ -437,7 +511,7 @@ def run_practice(messages: list[dict], model_name: str | None, subject: str,
                     kp_ids.append(kp)
             if t_results:
                 refs = _textbook_refs(t_results)
-                context = format_results(t_data)
+                context = append_marker_notice(format_results(t_data))
                 block = PRACTICE_COMPOSE_BLOCK
                 suffix = PRACTICE_SUFFIX
             else:
