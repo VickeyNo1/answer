@@ -93,7 +93,7 @@ TABLES_SQL = [
         completion_tokens INT NOT NULL DEFAULT 0 COMMENT '输出 token 数（Function Calling 两轮累加）',
         total_tokens INT NOT NULL DEFAULT 0 COMMENT '总 token 数',
         cost DOUBLE NOT NULL DEFAULT 0 COMMENT '费用（元）= tokens/1000 × 单价',
-        task_type VARCHAR(16) NOT NULL DEFAULT 'chat' COMMENT '任务类型：chat=对话/exam=判卷/profile=画像总结',
+        task_type VARCHAR(16) NOT NULL DEFAULT 'chat' COMMENT '任务类型：chat=对话/exam=判卷/profile=画像总结/ocr=图片识别/verify=题目同一性校验',
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
         INDEX idx_usage_created (created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='大模型用量与费用日志表'""",
@@ -192,7 +192,7 @@ EXTRA_COLUMNS = {
     "usage_logs": {
         "task_type": (
             "ALTER TABLE usage_logs ADD COLUMN task_type VARCHAR(16) NOT NULL DEFAULT 'chat' "
-            "COMMENT '任务类型：chat=对话/exam=判卷/profile=画像总结'"
+            "COMMENT '任务类型：chat=对话/exam=判卷/profile=画像总结/ocr=图片识别/verify=题目同一性校验'"
         ),
     },
 }

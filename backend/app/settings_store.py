@@ -15,10 +15,12 @@ SETTING_DEFAULTS: dict[str, int] = {
     "chat_concurrency": 3,
     "chat_queue_size": 5,
     "profile_update_interval": 20,
+    # 练习题是否连参考答案一起给出（0=剪裁，让学生先自行作答；v4.1）
+    "practice_reveal_answer": 0,
 }
 
 # 响应时按 bool 输出的键
-BOOL_KEYS = {"memory_enabled_default"}
+BOOL_KEYS = {"memory_enabled_default", "practice_reveal_answer"}
 
 _cache: dict[str, int] = dict(SETTING_DEFAULTS)
 _cache_lock = threading.Lock()

@@ -15,10 +15,17 @@ ADMIN_NAME = "管理员"
 
 # 默认大模型配置：(provider, model_name, display_name, price_in, price_out, is_active)
 # 单价单位：元/千 token（默认值仅供参考，管理员可在管理页调整）
+#
+# ⚠️ 下面两条视觉模型的单价是**待核实占位值**，务必到百炼控制台核对后修正
+#    （管理后台「大模型」Tab 可直接改，不必改代码重跑 seed）。
+#    必须有这两条记录：compute_cost 查不到模型时单价回退 0.0，OCR 的 tokens 会记
+#    但 cost 恒为 0，这笔开销在报表里完全不可见。
 DEFAULT_MODELS = [
     ("ali", "qwen3.7-flash", "通义千问 3.7 Flash", 0.0008, 0.002, 1),
     ("ali", "qwen3.7-plus", "通义千问 3.7 Plus", 0.0008, 0.002, 0),
     ("ali", "qwen3.7-max", "通义千问 3.7 Max", 0.0024, 0.0096, 0),
+    ("ali", "qwen-vl-max", "通义千问 VL Max", 0.003, 0.009, 0),
+    ("ali", "qwen-vl-plus", "通义千问 VL Plus", 0.0015, 0.0045, 0),
     ("deepseek", "deepseek-v3", "DeepSeek V3", 0.002, 0.008, 0),
     ("deepseek", "deepseek-r1", "DeepSeek R1", 0.004, 0.016, 0),
 ]

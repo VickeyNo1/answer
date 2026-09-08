@@ -14,6 +14,8 @@ from app.models import (
     MessageOut,
 )
 from app.chat import concurrency
+from app.chat import solver
+from app.chat.intent import INTENT_PRACTICE, INTENT_SOLVE, classify_intent
 from app.chat.memory import get_conversation_history
 from app.chat.qwen_service import build_messages, extract_question_text, stream_chat
 from app.admin.entitlements import get_effective_limit
@@ -32,10 +34,13 @@ async def chat(
     req: ChatRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    """SSE 流式对话：大模型 Function Calling 自主决定是否检索知识库
+    """SSE 流式对话：按意图分流后检索知识库并作答
 
     v4.0 链路（设计文档 §3.3）：配额校验 → 单人串行 → 并发闸门（有限排队）
     → 流式生成（queue/ocr/kb_search/kb_refs/kp_ids/delta/suggestions/done）
+    v4.1 追加：意图三分类（solve/practice/consult）→ solve 与 practice 走
+    `chat/solver.py` 的确定性检索阶梯，consult 仍由大模型 Function Calling 自主
+    决定是否检索；solve 额外下发 `match` 事件告知命中档位（exact/similar/none）。
     带图片时先视觉 OCR 识别题目，识别文本与用户文字组合后走同一管线（方案 B）。
     """
     user_id = current_user["id"]
@@ -83,7 +88,7 @@ async def chat(
             try:
                 # 同步视觉调用放线程池，避免阻塞事件循环（影响其他用户的 SSE 推送）
                 ocr_text = (await asyncio.to_thread(
-                    extract_question_text, req.image_base64
+                    extract_question_text, req.image_base64, user_id
                 ) or "").strip()
             except Exception:
                 logger.exception("图片 OCR 调用异常 user_id=%s", user_id)
@@ -144,7 +149,13 @@ async def chat(
         except Exception:
             pass
 
-        messages = build_messages(effective_message, history, memory_block)
+        # 6.5 意图分流（v4.1）：solve/practice 走 solver 的确定性检索阶梯，consult 走原路径
+        intent = classify_intent(effective_message, has_image=bool(ocr_text))
+        # 检索 query 用识别原文或用户原话，不用组合后的 effective_message（前缀会污染向量检索）
+        retrieval_query = (ocr_text or req.message).strip()[:1000]
+
+        messages = build_messages(effective_message, history, memory_block,
+                                  solver.system_prompt_for(intent))
         model_name = llm_store.get_active_model()
     except BaseException:
         # 预处理阶段失败：归还已持有的并发资源
@@ -177,7 +188,16 @@ async def chat(
             kp_ids: list[str] = []
             suggestions: list[str] = []
 
-            for chunk in stream_chat(messages, model_name, subject, user_id, conversation_id):
+            if intent == INTENT_SOLVE:
+                chunks = solver.run_solve(messages, model_name, subject, user_id,
+                                          conversation_id, retrieval_query)
+            elif intent == INTENT_PRACTICE:
+                chunks = solver.run_practice(messages, model_name, subject, user_id,
+                                             conversation_id)
+            else:
+                chunks = stream_chat(messages, model_name, subject, user_id, conversation_id)
+
+            for chunk in chunks:
                 if "error" in chunk:
                     yield _sse({"type": "error", "detail": chunk["error"]})
                     error_occurred = True
@@ -191,6 +211,9 @@ async def chat(
                 if "kp_ids" in chunk:
                     kp_ids = chunk["kp_ids"]
                     yield _sse({"type": "kp_ids", "kp_ids": kp_ids})
+                    continue
+                if "match" in chunk:
+                    yield _sse({"type": "match", **chunk["match"]})
                     continue
                 if "suggestions" in chunk:
                     suggestions = chunk["suggestions"]

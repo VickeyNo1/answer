@@ -204,6 +204,7 @@ export interface AppSettings {
   chat_concurrency: number;
   chat_queue_size: number;
   profile_update_interval: number;
+  practice_reveal_answer: boolean;
 }
 
 export type AppSettingsUpdate = Partial<AppSettings>;

@@ -59,7 +59,7 @@ ALTER_SQL = [
     "ALTER TABLE usage_logs MODIFY completion_tokens INT NOT NULL DEFAULT 0 COMMENT '输出 token 数（Function Calling 两轮累加）'",
     "ALTER TABLE usage_logs MODIFY total_tokens INT NOT NULL DEFAULT 0 COMMENT '总 token 数'",
     "ALTER TABLE usage_logs MODIFY cost DOUBLE NOT NULL DEFAULT 0 COMMENT '费用（元）= tokens/1000 × 单价'",
-    "ALTER TABLE usage_logs MODIFY task_type VARCHAR(16) NOT NULL DEFAULT 'chat' COMMENT '任务类型：chat=对话/exam=判卷/profile=画像总结'",
+    "ALTER TABLE usage_logs MODIFY task_type VARCHAR(16) NOT NULL DEFAULT 'chat' COMMENT '任务类型：chat=对话/exam=判卷/profile=画像总结/ocr=图片识别/verify=题目同一性校验'",
     "ALTER TABLE usage_logs MODIFY created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'",
     # ===== exams（v4.0-M2）=====
     "ALTER TABLE exams COMMENT='试卷表'",

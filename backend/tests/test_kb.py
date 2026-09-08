@@ -3,7 +3,14 @@
 import pytest
 
 from app.kb import client as kb_client
-from app.kb.prompt import format_results, collect_kp_ids, FALLBACK_TEXT
+from app.kb.prompt import (
+    ANSWER_OMITTED_HINT,
+    CONTENT_TYPE_LABELS,
+    FALLBACK_TEXT,
+    collect_kp_ids,
+    format_results,
+    sub_question_text,
+)
 
 
 class FakeHttpResponse:
@@ -184,10 +191,38 @@ class TestFormatResults:
                 "answer": "A", "explanation": "存货属于流动资产。",
             }],
         }
-        text = format_results(data)
+        text = format_results(data, include_answer=True)
         assert "Q-100" in text
         assert "存货" in text
-        assert "答案" in text
+        assert "答案：A" in text
+        assert "存货属于流动资产。" in text
+
+    def test_questions_answer_cut_by_default(self):
+        """默认剪裁题库答案（契约见 doc/知识库对接文档.md：先答题后判卷场景务必剪裁）
+
+        注意不能只断言 "答案" not in text —— 剪裁提示语本身就含「答案」二字。
+        """
+        data = {
+            "collection": "questions",
+            "results": [{
+                "question_id": "Q-100", "question_type": "单选题",
+                "stem": "下列哪项属于流动资产？",
+                "answer": "A", "explanation": "存货属于流动资产。",
+            }],
+        }
+        text = format_results(data)
+        assert "答案：A" not in text
+        assert "存货属于流动资产。" not in text
+        assert "已省略" in text
+
+    def test_questions_no_answer_no_hint(self):
+        """题库本就缺答案的题（约 69 题原始资料缺失）不应谎称「已省略」"""
+        data = {
+            "collection": "questions",
+            "results": [{"question_id": "Q-200", "stem": "何谓权责发生制？"}],
+        }
+        text = format_results(data)
+        assert "已省略" not in text
 
     def test_collect_kp_ids_dedup_order(self):
         data = {"results": [
@@ -198,6 +233,125 @@ class TestFormatResults:
 
     def test_collect_kp_ids_none(self):
         assert collect_kp_ids(None) == []
+
+
+# ========== content_type 定向组装（v4.1） ==========
+
+def _tb(title, ctype=None, content=None):
+    r = {"title": title, "content": content or f"正文-{title}",
+         "chapter": "第21章 租赁", "section": "第1节",
+         "knowledge_point_ids": ["ACC-21-01-01"]}
+    if ctype is not None:
+        r["content_type"] = ctype
+    return r
+
+
+def _data(results):
+    return {"collection": "textbook", "results": results}
+
+
+class TestContentTypeOrdering:
+
+    def test_label_rendered_in_chinese(self):
+        text = format_results(_data([_tb("融资租赁的判断标准", "example")]))
+        assert "例题" in text
+        assert "【资料1｜例题｜" in text
+
+    def test_unknown_and_missing_type_rendered_as_unclassified(self):
+        text = format_results(_data([_tb("老数据", None), _tb("新类型", "video")]))
+        assert text.count("未分类") == 2
+
+    @pytest.mark.parametrize("ctype,label", sorted(CONTENT_TYPE_LABELS.items()))
+    def test_every_enum_value_has_a_label(self, ctype, label):
+        assert label in format_results(_data([_tb("t", ctype)]))
+
+    def test_prefer_solve_moves_examples_before_theory(self):
+        """分录题检索回一堆纯理论是没用的：例题/分录/公式/表格必须前置"""
+        results = [_tb("理论A", "theory"), _tb("例题B", "example"),
+                   _tb("原则C", "principle"), _tb("分录D", "entry")]
+        text = format_results(_data(results), prefer="solve")
+        assert text.index("例题B") < text.index("理论A")
+        assert text.index("分录D") < text.index("理论A")
+        assert text.index("例题B") < text.index("原则C")
+
+    def test_prefer_solve_keeps_score_order_within_group(self):
+        """同组内必须保持知识库返回的原 score 顺序（Python sorted 稳定）"""
+        results = [_tb("理论1", "theory"), _tb("例题1", "example"),
+                   _tb("理论2", "theory"), _tb("例题2", "example")]
+        text = format_results(_data(results), prefer="solve")
+        assert text.index("例题1") < text.index("例题2")
+        assert text.index("理论1") < text.index("理论2")
+
+    def test_missing_content_type_sorted_last_but_never_dropped(self):
+        """**兜底**：现有测试假数据与线上老数据都没有 content_type，
+        若筛选逻辑丢弃缺字段条目，这些资料会静默消失"""
+        results = [_tb("无类型"), _tb("例题B", "example"), _tb("未知类型", "video")]
+        text = format_results(_data(results), prefer="solve")
+        assert "正文-无类型" in text and "正文-例题B" in text and "video" not in text
+        assert "正文-未知类型" in text
+        assert text.index("例题B") < text.index("正文-无类型")
+        assert text.count("【资料") == 3          # 一条都没丢
+
+    def test_no_prefer_keeps_original_order(self):
+        """不传 prefer 时完全不排序，consult 老路径行为不变"""
+        results = [_tb("理论A", "theory"), _tb("例题B", "example")]
+        text = format_results(_data(results))
+        assert text.index("理论A") < text.index("例题B")
+
+    def test_prefer_ignored_for_questions_collection(self):
+        data = {"collection": "questions",
+                "results": [{"question_id": "Q-1", "stem": "题干"}]}
+        assert format_results(data, prefer="solve") == format_results(data)
+
+
+# ========== 子问渲染（对象数组兼容） ==========
+
+class TestSubQuestionText:
+
+    def test_plain_string_passthrough(self):
+        assert sub_question_text("计算购入成本") == "计算购入成本"
+
+    def test_object_renders_question_text(self):
+        assert sub_question_text({"id": "q1", "question": "编制购入分录"}) == "编制购入分录"
+
+    def test_object_answer_cut_by_default(self):
+        """子问对象自带 answer，不剪裁就会从后门泄漏答案"""
+        sub = {"question": "编制购入分录", "answer": "借：存货 100", "explanation": "略"}
+        assert "借：存货" not in sub_question_text(sub)
+        assert "借：存货 100" in sub_question_text(sub, include_answer=True)
+
+    @pytest.mark.parametrize("sub", [None, "", {}, {"id": "q1"}, {"answer": "B"}])
+    def test_unusable_sub_renders_empty_not_dict_repr(self, sub):
+        """取不到文本时返回空串由调用方跳过，绝不能把 dict repr 塞进 prompt"""
+        out = sub_question_text(sub)
+        assert "{" not in out
+
+    def test_object_answer_only_revealed_when_requested(self):
+        assert sub_question_text({"answer": "B"}, include_answer=True) == "参考答案：B"
+
+    def test_format_questions_renders_object_sub_questions(self):
+        data = {"collection": "questions", "results": [{
+            "question_id": "Q-300", "question_type": "综合题",
+            "materials": "甲公司资料", "stem": None,
+            "sub_questions": [{"question": "编制购入分录", "answer": "借：存货"},
+                              "计算年末账面价值",
+                              {"id": "q3"}],
+            "answer": None, "explanation": None,
+        }]}
+        text = format_results(data)
+        assert "子问1：编制购入分录" in text
+        assert "子问2：计算年末账面价值" in text
+        assert "子问3" not in text            # 空渲染跳过，编号保持连续
+        assert "{" not in text
+        assert "借：存货" not in text
+        # 顶层 answer 为 null 但子问里藏着答案 → 仍须给出「已省略」提示
+        assert ANSWER_OMITTED_HINT in text
+
+    def test_format_questions_reveals_sub_answers_when_requested(self):
+        data = {"collection": "questions", "results": [{
+            "question_id": "Q-300", "sub_questions": [{"question": "编制分录", "answer": "借：存货"}],
+        }]}
+        assert "借：存货" in format_results(data, include_answer=True)
 
 
 # ========== GET /api/subjects ==========

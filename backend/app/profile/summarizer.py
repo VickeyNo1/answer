@@ -76,7 +76,7 @@ def summarize_profile(user_id: int) -> None:
             profile_store.reset_dialog_count(db, user_id)
         return
 
-    model = llm_store.get_active_model()
+    model = llm_store.get_model_for("profile")
     prompt = build_summary_prompt(history)
 
     try:

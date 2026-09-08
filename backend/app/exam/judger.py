@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from app.llm.client import create_client
 from app.database import get_db_ctx
+from app.kb.prompt import sub_question_text
 from app.llm import store as llm_store
 
 logger = logging.getLogger(__name__)
@@ -70,7 +71,10 @@ def build_judge_prompt(snapshot: dict, student_answer: str | None,
         parts.append(f"【题干】\n{snapshot['stem']}")
     subs = snapshot.get("sub_questions") or []
     if subs:
-        items = "\n".join(f"{i}. {s}" for i, s in enumerate(subs, 1))
+        items = "\n".join(
+            f"{i}. {sub_question_text(s, include_answer=True)}"
+            for i, s in enumerate(subs, 1)
+        )
         parts.append(f"【要求】\n{items}")
     parts.append(f"【参考答案】\n{snapshot.get('answer') or '（无）'}")
     if snapshot.get("explanation"):
@@ -147,7 +151,7 @@ def grade_exam(exam_id: int) -> None:
     """
     from app.exam import store  # 函数内导入：store 已导入本模块，避免循环依赖
 
-    model = llm_store.get_active_model()
+    model = llm_store.get_model_for("judge")
     with get_db_ctx() as db:
         exam = store.get_exam(db, exam_id)
         if exam is None or exam["status"] != "grading":

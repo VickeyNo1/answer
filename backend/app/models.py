@@ -118,6 +118,7 @@ class AppSettingsOut(BaseModel):
     chat_concurrency: int
     chat_queue_size: int
     profile_update_interval: int
+    practice_reveal_answer: bool
 
 
 class AppSettingsUpdate(BaseModel):
@@ -127,6 +128,7 @@ class AppSettingsUpdate(BaseModel):
     chat_concurrency: int | None = None
     chat_queue_size: int | None = None
     profile_update_interval: int | None = None
+    practice_reveal_answer: bool | None = None
 
 
 class EntitlementsUpdate(BaseModel):

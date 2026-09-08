@@ -91,6 +91,38 @@ class TestRoundHalfStep:
         assert judger.round_half_step(10.0) == 10.0
 
 
+class TestBuildJudgePrompt:
+    def test_object_sub_questions_rendered_as_text(self):
+        """对象格式子问不得以 Python dict 字面量喂给判卷模型"""
+        prompt = judger.build_judge_prompt(
+            {
+                "question_type": "综合",
+                "stem": "甲公司题干",
+                "sub_questions": [
+                    {"question": "编制购入分录", "answer": "借：存货"},
+                    "计算本批存货成本",
+                ],
+                "answer": "见子问",
+            },
+            "学生作答",
+            15.0,
+        )
+        assert "编制购入分录" in prompt
+        assert "借：存货" in prompt  # 判卷场景需带子问自带参考答案
+        assert "计算本批存货成本" in prompt
+        assert "{'question'" not in prompt
+
+    def test_string_sub_questions_and_placeholders(self):
+        prompt = judger.build_judge_prompt(
+            {"question_type": "计算", "sub_questions": ["要求1", "要求2"], "answer": None},
+            None,
+            10.0,
+        )
+        assert "1. 要求1" in prompt and "2. 要求2" in prompt
+        assert "（无）" in prompt
+        assert "（未作答）" in prompt
+
+
 # ========== 主观题 LLM 判卷（需数据库） ==========
 
 JUDGE_OK = ('{"score_rate": 0.7, "reason": "思路正确，分录遗漏一项"}', 120, 40)

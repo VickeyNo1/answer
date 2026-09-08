@@ -2,8 +2,10 @@
 """测试全局设置与单个学生权益（v4.0 M1）
 
 覆盖：
-- GET /api/admin/settings：5 键齐全、类型转换（memory_enabled_default 为 bool）
+- GET /api/admin/settings：6 键齐全、类型转换（memory_enabled_default /
+  practice_reveal_answer 为 bool）
 - PUT /api/admin/settings：部分更新 + 内存缓存刷新（测后恢复默认值）
+- practice_reveal_answer：练习题答案剪裁开关（v4.1）在线切换即时生效
 - PUT /api/admin/students/{id}/entitlements：覆盖值设置 / null 恢复跟随全局 / 404
 - 权限：非管理员 403
 """
@@ -57,6 +59,57 @@ class TestAppSettings:
     def test_put_requires_admin(self, client, student_headers):
         resp = client.put("/api/admin/settings", json={
             "chat_queue_size": 9,
+        }, headers=student_headers)
+        assert resp.status_code == 403
+
+
+class TestPracticeRevealAnswerSetting:
+    """练习题答案剪裁开关（v4.1）
+
+    价值：发现剪裁导致答题质量退化时，管理员在线切换即可回退，**不用发版**。
+    """
+
+    def test_default_is_cut(self, client, admin_headers):
+        data = client.get("/api/admin/settings", headers=admin_headers).json()
+        assert data["practice_reveal_answer"] is False
+        assert isinstance(data["practice_reveal_answer"], bool)
+
+    def test_put_bool_persists_as_int_and_refreshes_cache(self, client, admin_headers):
+        from app import settings_store
+
+        resp = client.put("/api/admin/settings", json={
+            "practice_reveal_answer": True,
+        }, headers=admin_headers)
+        assert resp.status_code == 200
+
+        with get_db_ctx() as db:
+            row = db.execute(
+                "SELECT setting_value FROM app_settings WHERE setting_key = %s",
+                ("practice_reveal_answer",),
+            ).fetchone()
+        assert row["setting_value"] == "1"
+
+        # 缓存已刷新：solver 下一次提问就能看到新值，无需重启进程
+        assert settings_store.get_bool("practice_reveal_answer") is True
+        assert client.get("/api/admin/settings",
+                          headers=admin_headers).json()["practice_reveal_answer"] is True
+
+        # 关回去
+        resp = client.put("/api/admin/settings", json={
+            "practice_reveal_answer": False,
+        }, headers=admin_headers)
+        assert resp.status_code == 200
+        assert settings_store.get_bool("practice_reveal_answer") is False
+        with get_db_ctx() as db:
+            row = db.execute(
+                "SELECT setting_value FROM app_settings WHERE setting_key = %s",
+                ("practice_reveal_answer",),
+            ).fetchone()
+        assert row["setting_value"] == "0"
+
+    def test_put_requires_admin(self, client, student_headers):
+        resp = client.put("/api/admin/settings", json={
+            "practice_reveal_answer": True,
         }, headers=student_headers)
         assert resp.status_code == 403
 

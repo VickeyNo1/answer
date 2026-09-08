@@ -1,8 +1,8 @@
 # AGENTS.md
 
 > 本文件是 **AI 编码助手的唯一入口文档**。开始任何任务前先读本文件，再按需跳转到 `doc/` 下的详细文档。
-> 项目：会计答疑智能体（大模型 Function Calling 对接外部知识库检索服务的会计专业 AI 答疑系统）
-> 文档基线版本：v4.0（M3） ｜ 维护约定见 [§9](#9-文档维护约定ai-必读)
+> 项目：会计答疑智能体（大模型对接外部知识库检索服务的会计专业 AI 答疑系统）
+> 文档基线版本：v4.1（答题链路重构） ｜ 维护约定见 [§9](#9-文档维护约定ai-必读)
 
 ---
 
@@ -27,9 +27,10 @@
 | 运行 / 测试 / 初始化数据 | 本文件 [§5 常用命令](#5-常用命令) |
 | 遵守编码约定、避开已知坑 | 本文件 [§6 约定与注意事项](#6-编码约定与注意事项必读) |
 | 查数据库表结构 | 本文件 [§7 数据库](#7-数据库表结构) |
-| 查全部接口一览 | 本文件 [§8 接口一览](#8-接口一览28-个业务接口) → 明细见 `doc/接口文档.md` |
+| 查全部接口一览 | 本文件 [§8 接口一览](#8-接口一览42-个业务接口) → 明细见 `doc/接口文档.md` |
 | 查接口请求/响应细节 | `doc/接口文档.md` |
-| 查架构与开发规范 | `doc/开发文档.md` |
+| 查架构与开发规范 | **本文件 [§2](#2-项目概述)/[§4](#4-代码地图)/[§6](#6-编码约定与注意事项必读) 为现行权威**；`doc/开发文档.md` 停在 v3.0 已严重滞后（文件头有过时警示表），仅其开发环境/端口/部署拓扑部分仍可参考 |
+| 查答题链路（意图分流/三档命中）设计 | `doc/plans/2026-09-07-答题链路重构.md` |
 | 查部署与运维 | `doc/ops/部署文档.md` |
 | 恢复上次工作进度（跨设备/新会话） | `doc/ops/工作状态.md` → 约定见本文件 [§10](#10-跨设备工作状态同步约定ai-必读) |
 
@@ -39,19 +40,29 @@
 
 面向会计专业学生的 AI 智能答疑系统，前后端分离：
 
-- **后端**（`backend/`，端口 8000）：FastAPI，提供认证、对话（Function Calling + 流式）、答案反馈、管理后台（含全局设置/权益/检索报表）、大模型管理、科目列表接口。
+- **后端**（`backend/`，端口 8000）：FastAPI，提供认证、对话（意图分流 + 流式）、答案反馈、管理后台（含全局设置/权益/检索报表）、大模型管理、科目列表接口。
 - **前端**（`frontend/`，端口 3000）：Next.js App Router，学生对话页 + 管理员后台。
-- **核心链路（v4.0 M1）**：学生提问 → 前置校验（每日配额 → 单人串行 → 并发闸门+有限排队，任一不过 429）→ dashscope 大模型带 `search_cpa_knowledge` 工具流式生成 → 模型决定是否检索 → 后端调机器A 知识库检索服务 `POST /kb/search`（subject 由后端注入，每次调用写 `kb_search_logs`）→ 拼接检索结果作二轮流式回答（SSE，含 `kb_refs` 引用卡片、`suggestions` 追问建议）→ 落库知识点编号（`knowledge_point_ids`）并记录用量费用。
+- **核心链路（v4.1 答题链路重构）**：学生提问（文字或图片）→ 前置校验（每日配额 → 单人串行 → 并发闸门+有限排队，任一不过 429）→ 带图片时先视觉 OCR 转录题目 → **意图三分类**（`app/chat/intent.py`，纯规则不调 LLM）→ 按意图分流：
+  - **solve（问题目）**：绕过 Function Calling，后端**确定性**执行检索阶梯（`app/chat/solver.py::run_solve`）——先查题库 `questions`，有结果则用 LLM 二次校验是否原题，据此定档 **exact（原题命中）/ similar（相似题）/ none（无匹配）**，下发 `match` 事件；**三档都必须给出完整解答**，只在依据强度与答案末尾的不确定性标注上有区别。
+  - **practice（要练习题）**：检索题库并**原样呈现**，默认剪裁答案（`run_practice`）。
+  - **consult（概念性问题）**：维持原路径——大模型带 `search_cpa_knowledge` 工具流式生成，由模型自主决定是否检索。
+  - 三分流汇合后：拼接检索结果作一轮流式回答（SSE，含 `kb_refs` 引用卡片、`suggestions` 追问建议）→ 落库知识点编号（`knowledge_point_ids`）并记录用量费用。检索调用一律写 `kb_search_logs`，`subject` 由后端注入。
 - **学生记忆（v4.0 M3）**：三层记忆——错题本（纯程序，交卷判分时自动入本）+ 薄弱点（实时 SQL 聚合，不落快照）+ 学习风格画像（LLM 覆盖式总结，每 `profile_update_interval` 轮触发）。记忆注入块 ≤300 token 拼入 system prompt。开关「控用不控记」：关时不注入/不总结，但数据照常积累。
 
 两大要点（v3.0）：
-1. **知识库对接**：本地 ChromaDB RAG 全部移除，改为对接机器A 外部知识库检索服务；大模型通过 Function Calling 自主决定是否检索，检索失败自动降级为大模型直答（不报错）。
+1. **知识库对接**：本地 ChromaDB RAG 全部移除，改为对接机器A 外部知识库检索服务；检索失败自动降级为大模型直答（不报错）。~~大模型通过 Function Calling 自主决定是否检索~~ → **v4.1 起仅 consult 意图如此**，solve/practice 由后端确定性检索（见 §6）。
 2. **科目体系**：本地科目 CRUD 移除，科目枚举由知识库侧维护（当前仅 `cpa_acc` = CPA 会计 online），后端硬编码注册表并通过 `GET /api/subjects` 只暴露 online 项。
 
 v4.0 M1 试点底座新增要点：
 3. **对话限流**：每日配额（users 覆盖值 ?? 全局默认）+ 单人串行 + 全局并发闸门与有限排队（线程级方案，见 `app/chat/concurrency.py`），三种情形均返回 429（文案区分）。
 4. **可观测与反馈**：检索日志 `kb_search_logs`（六态状态）+ 答案反馈 `feedbacks`（点赞/点踩 UPSERT）+ 管理端报表（反馈明细/检索质量/高频知识点）。
 5. **全局设置与权益**：`app_settings` K-V 表 + 内存缓存（`app/settings_store.py`）；单人权益覆盖值存 users 新增两列，生效值计算见 `app/admin/entitlements.py`。
+
+v4.1 答题链路重构新增要点（设计说明见 `doc/plans/2026-09-07-答题链路重构.md`）：
+6. **意图三分类**：solve / practice / consult，纯规则判定（`app/chat/intent.py`），**不调 LLM**；带图片直通 solve。两个方向的误判都是优雅降级（solve→consult 退回现状行为；consult→solve 多一次检索但答案依然正确），故规则足矣。
+7. **solve 三档命中判定**：exact / similar / none。**不用检索分数阈值**——`score` 是重排后的排序分，不同请求间不可比（`doc/知识库对接文档.md`）；改用 LLM 二次校验（`solver.verify_same_question`）。**校验失败一律归 similar，绝不归 exact**：误报「找到原题」会让学生拿着错答案去考试。
+8. **题库答案默认剪裁**：`format_results(include_answer=False)`，需要答案的调用点必须显式传 `True`（safe-by-default：意图误判也不会漏答案）。管理端可用 `practice_reveal_answer` 在线回退，无需发版。
+9. **分用途配模型**：对话/判卷/画像/校验/OCR 五个用途的敏感度与调用量完全不同，不再共用一个模型（`llm/store.py::get_model_for`，env 覆盖，空串=跟随后台激活模型）。
 
 ---
 
@@ -68,12 +79,14 @@ v4.0 M1 试点底座新增要点：
 | 关系数据库 | MySQL 8.4（机器A，utf8mb4） | — | 连接配置见 `backend/.env` |
 | MySQL 驱动 | PyMySQL（DictCursor） | 1.1.* | `app/database.py` |
 | 知识库检索 | 外部检索服务 `POST /kb/search`（HTTP） | — | `app/kb/client.py`（httpx） |
-| 大模型 | dashscope SDK（通义千问 + DeepSeek 统一接入，Function Calling） | 1.20.* | `DASHSCOPE_API_KEY` |
+| 大模型调用 | **openai SDK → 阿里百炼 OpenAI 兼容端点**（通义千问 + DeepSeek 统一接入） | `openai>=1.0.0` | `app/llm/client.py::create_client()`，密钥 `DASHSCOPE_API_KEY` |
+| 分用途模型 | `CHAT_MODEL`（对话回退）/ `VISION_MODEL`（OCR）/ `JUDGE_MODEL`（判卷）/ `PROFILE_MODEL`（画像）/ `VERIFY_MODEL`（题目同一性校验） | — | `app/config.py`；`CHAT_MODEL` 默认 `qwen3.7-flash`，仅当 `model_configs` 查不到激活模型时作回退（`llm/store.py::get_active_model`）；后三者**空串 = 跟随后台激活模型**，见 `llm/store.py::get_model_for` |
 | 认证 | JWT（python-jose）+ bcrypt（passlib） | — | `app/auth/` |
 | Excel 解析 | openpyxl（学生批量导入） | 3.1.* | `app/admin/` |
 | Python 环境 | uv + Python 3.11+ | — | `backend/.venv` |
 
-> ⚠️ DeepSeek 走**阿里百炼统一接入**，复用 `DASHSCOPE_API_KEY`，模型名直接通过 dashscope `Generation.call` 调用，**无需**独立 SDK 或分支。
+> ⚠️ **所有 LLM 调用一律走 `create_client()`（百炼 OpenAI 兼容端点 `/compatible-mode/v1`），禁止引入 `dashscope.Generation.call`。** 迁移原因：qwen3.5+ 系列在 DashScope 原生 SDK 里要用 `MultiModalConversation`，端点按模型分叉；兼容端点一个 `base_url` 通吃。DeepSeek 亦走百炼统一接入，复用 `DASHSCOPE_API_KEY`，无需独立 SDK 或分支。
+> `dashscope` 依赖已于 2026-09-08 从 `pyproject.toml` / `requirements.txt` / `uv.lock` 移除（全仓零 import）。
 
 ---
 
@@ -83,16 +96,16 @@ v4.0 M1 试点底座新增要点：
 
 | 路径 | 职责 | 关键点 |
 |------|------|--------|
-| `main.py` | FastAPI 应用入口，注册 8 个 router，CORS，`/api/health`（三字段） | 启动时 `init_db()` 建库建表 + 加载设置缓存 + 初始化并发闸门 |
-| `config.py` | `Settings`（pydantic-settings），读 `.env` | `MYSQL_*` / `KB_*` 配置；`get_settings()` 带 `lru_cache` |
+| `main.py` | FastAPI 应用入口，注册 10 个 router，CORS，`/api/health`（三字段） | 启动时 `init_db()` 建库建表 + 加载设置缓存 + 初始化并发闸门 |
+| `config.py` | `Settings`（pydantic-settings），读 `.env` | `MYSQL_*` / `KB_*` 配置；`VISION_MODEL`（OCR 视觉模型）+ `JUDGE_MODEL`/`PROFILE_MODEL`/`VERIFY_MODEL`（分用途覆盖，空串=跟随激活模型，v4.1）；`get_settings()` 带 `lru_cache` |
 | `database.py` | MySQL 建库建表（PyMySQL + DictCursor） | `DB` 包装类保留 `db.execute()` 习惯；`get_db()`（Depends 生成器）vs `get_db_ctx()`（脚本上下文管理器）见 §6；存量库幂等补 users 新列 |
 | `models.py` | 全部 Pydantic 请求/响应模型 | 新增接口先在此定义 schema |
-| `settings_store.py` | `app_settings` 全局设置：内存缓存 + 类型转换（v4.0） | 启动时全量加载，PUT 更新后刷新缓存；值统一字符串落库、读时按键转 int/bool |
+| `settings_store.py` | `app_settings` 全局设置：内存缓存 + 类型转换（v4.0） | 启动时全量加载，PUT 更新后刷新缓存；值统一字符串落库、读时按键转 int/bool；`BOOL_KEYS` 内的键按 bool 输出（v4.1 增 `practice_reveal_answer`） |
 | `auth/` | 登录、JWT、依赖、自助改密码 | `deps.py`：`get_current_user`、`require_admin`；`router.py` 另含 `me_router`（`PUT /api/me/password`，v4.0） |
-| `chat/` | 对话主流程 | `router.py`（SSE + 对话 CRUD + `POST /api/feedback`）、`qwen_service.py`（`stream_chat` Function Calling 两轮流式，含降级话术/追问建议解析）、`memory.py`（多轮历史）、`concurrency.py`（线程级并发闸门/单人串行/有限排队，v4.0） |
-| `kb/` | 知识库对接（v3.0） | `client.py`（`POST /kb/search`，超时/5001 重试1次后降级；v4.0 新增：每次检索写 `kb_search_logs`、`probe()` 供健康检查探测）、`prompt.py`（`SEARCH_TOOL` schema + 结果拼接 + `collect_kp_ids`）、`subjects.py`（科目注册表 + `GET /api/subjects`） |
+| `chat/` | 对话主流程 | `router.py`（SSE + 意图分流 + 对话 CRUD + `POST /api/feedback`）、**`intent.py`（意图三分类纯规则，v4.1）**、**`solver.py`（solve 三档流水线 `run_solve` + practice 出题 `run_practice` + LLM 二次校验 `verify_same_question`，v4.1）**、`qwen_service.py`（`extract_question_text` 图片 OCR、`build_messages`、`stream_chat` consult 路径 Function Calling、`stream_answer` 三处共用的流式生成+追问建议解析）、`memory.py`（多轮历史）、`concurrency.py`（线程级并发闸门/单人串行/有限排队，v4.0） |
+| `kb/` | 知识库对接（v3.0） | `client.py`（`POST /kb/search`，超时/5001 重试1次后降级；v4.0 新增：每次检索写 `kb_search_logs`、`probe()` 供健康检查探测）、`prompt.py`（`SEARCH_TOOL` schema + 结果拼接 + `collect_kp_ids`；v4.1 新增：`content_type` 中文标注与 `prefer="solve"` 定向排序、`include_answer` 默认剪裁、`sub_question_text` 兼容字符串/对象两种子问）、`subjects.py`（科目注册表 + `GET /api/subjects`） |
 | `admin/` | 管理后台 | `router.py`（学生增删改查/批量、统计；v4.0 新增：全局设置 GET/PUT、单人权益、反馈明细、检索报表 kb/stats + kb/hot-kps）、`stats.py`（聚合统计）、`entitlements.py`（权益生效值：users 覆盖值 ?? 全局默认，v4.0） |
-| `llm/` | 大模型管理 | `router.py`（模型 CRUD/activate/usage）、`store.py`（模型与用量数据访问 + 费用计算） |
+| `llm/` | 大模型管理 | **`client.py`（`create_client()` 百炼 OpenAI 兼容端点工厂，全项目唯一 LLM 入口）**、`router.py`（模型 CRUD/activate/usage）、`store.py`（模型与用量数据访问 + 费用计算 + `record_usage(task_type=...)`；v4.1 新增 `get_model_for(task_type)` 分用途选模型） |
 | `exam/` | 考试系统（v4.0 M2） | `router.py`（学生端 6 接口 + 管理端 3 接口）、`store.py`（组卷/暂存/交卷/掌握度/管理端数据访问）、`judger.py`（客观判分 + 主观题 LLM 异步判卷 `ThreadPoolExecutor`） |
 | `profile/` | 学生记忆（v4.0 M3） | `router.py`（学生端 3 接口 + 管理端 2 接口）、`store.py`（错题本 CRUD + 画像 + 薄弱点实时聚合 + 记忆注入块构建）、`summarizer.py`（LLM 画像总结，复用 `judger._bg_executor` 线程池） |
 
@@ -109,7 +122,7 @@ v4.0 M1 试点底座新增要点：
 | `components/admin/` | `StatsTab`、`StudentTab`、`ModelTab`、`ExamTab`（筛选列表→行展开详情→行内改分） |
 | `lib/api.ts` | fetch 封装：`apiGet/apiPost/apiPut/apiDelete/apiUpload` |
 | `lib/auth.ts` | token 本地存储与读取 |
-| `lib/sse.ts` | SSE 对话客户端 `sendChatMessage(conversationId, message, subject, callbacks)`（处理 `kb_search`/`kp_ids`/`queue`/`kb_refs`/`suggestions` 事件） |
+| `lib/sse.ts` | SSE 对话客户端 `sendChatMessage(conversationId, message, subject, callbacks)`（处理 `kb_search`/`kp_ids`/`queue`/`kb_refs`/`suggestions`/`ocr` 事件）。⚠️ `switch` **无 default 分支**，未列举的事件静默忽略——v4.1 的 `match` 事件即刻意不接：solve 命中档位通过答案末尾标注文案随正文渲染，故本轮前端零改动。要加徽标时在此处补 `case "match"` |
 | `types/index.ts` | 全部 TypeScript 类型（与后端 `models.py` 对应） |
 
 ---
@@ -131,7 +144,14 @@ uv run python seed.py
 # 启动后端（http://localhost:8000，文档 /docs）；启动时自动建库建表
 uv run uvicorn app.main:app --reload
 
-# 运行测试（MySQL 不可达时全部 skip；测试库 answer_test 自动建表/清理）
+# 运行测试（测试库 answer_test 自动建表/清理）
+# ⚠️ MySQL 不可达时**不是全部 skip**：纯函数/生成器类用例（intent、solver、verify、
+#    kb prompt、model routing 等）不依赖 DB 仍会跑，只有 DB 门控用例 skip。
+#    因此「passed 不为 0」**不能**推断数据库已连通——必须看 skipped 数。
+#    当前共收集 530 例；skipped 高达 300+ 即说明 MySQL 没连上，此时全部 router 集成
+#    测试、settings API、OCR 集成、SSE 护栏用例都没真正执行过。
+#    连通后基线（2026-09-08 实测）：468 passed / 62 skipped，62 全为 tests/e2e
+#    （后端未启动自动跳过），即非 e2e 用例全绿。
 uv run pytest -q
 ```
 
@@ -144,23 +164,28 @@ npx tsc --noEmit       # 类型检查
 ```
 
 - 默认管理员账号：`admin` / `admin123`（由 `seed.py` 写入）。
-- 测试库 `answer_test`（`tests/conftest.py` 自动建库建表 + teardown DROP）；机器A MySQL 不可达时全部测试 skip。
+- 测试库 `answer_test`（`tests/conftest.py` 自动建库建表 + teardown DROP）；机器A MySQL 不可达时**仅 DB 门控用例 skip**，纯函数用例照跑（详见上方 `pytest` 注释）。
 - E2E 测试（`tests/e2e/`）在后端未启动时自动 skip。
 
 ---
 
 ## 6. 编码约定与注意事项（必读）
 
+- **所有 LLM 调用一律走 `app/llm/client.py::create_client()`（v4.1）**：百炼 OpenAI 兼容端点，**禁止引入 `dashscope.Generation.call` / `MultiModalConversation`**。新加 LLM 调用点时先 `from app.llm.client import create_client`，模型名从 `llm_store.get_active_model()` 或 `get_model_for(task_type)` 取。
+- **`extra_body={"enable_thinking": False}` 是硬编码，换厂商前必须确认兼容性（v4.1）**：现有 6 处——`qwen_service.py`（OCR / `stream_answer` / `stream_chat` 首轮）、`solver.py`（verify）、`exam/judger.py`、`profile/summarizer.py`。⚠️ 智谱 GLM-5.3 系列**强制思考**，传 disabled 会直接请求失败（且思维链按输出 token 计费）；换智谱只能选 `ZHIPU/GLM-5.2`。
+- **题库 `answer`/`explanation` 默认剪裁（v4.1）**：`format_results(data, include_answer=False)`，需要答案的调用点**必须显式传 `True`**。当前 4 个调用点：**无条件 `True`** 仅 `run_solve` 的 exact/similar 两档（就是学生问的那道题／作范例的相似题）；`run_practice` 与 `qwen_service.stream_chat`（consult 老路径）传的是管理端开关 `practice_reveal_answer` 的值（**默认 `False`**）。契约见 `doc/知识库对接文档.md`「先答题后判卷场景务必剪裁」。剪裁时附「（参考答案与解析已省略，请先自行作答）」，且**子问对象自带的答案也会被剪**（`sub_question_text`），别从后门漏。
+- **意图分流与检索 query 取法（v4.1）**：`classify_intent` 判定顺序即优先级（图片 → 强 solve 标记 → practice 标记 → 弱 solve 证据 → consult），**不可调换**——「这道练习题怎么做」必须判 solve。solve/practice 的检索 query 取 `ocr_text or req.message`，**不取组合后的 `effective_message`**（「请解答\n\n【图片识别内容】」前缀会污染向量检索），截断 1000 字符。意图与档位**本轮不落库**（`messages` 无对应列），档位靠答案末尾标注文案随 `content` 落库。
 - **数据库连接两种用法别混用**：接口内用 `Depends(get_db)`（生成器）；脚本/非请求上下文用 `with get_db_ctx() as db`（上下文管理器）。
 - **SQL 占位符统一用 `%s`**（PyMySQL 风格），**不要用 `?`**；日期用 MySQL 函数（如 `CURDATE()`，不要用 SQLite 的 `DATE('now')`）。
 - **PyMySQL 返回类型陷阱**：`fetchall()` 结果需 `list()` 化再传给 Pydantic；`SUM()` 返回 `Decimal`（用 `int()`/`float()` 包裹）；`DATE` 列返回 `date`、`created_at` 返回 `datetime`（作为字符串字段时需 `str()`）。
 - **FastAPI 路由顺序**：静态路径要声明在动态路径之前。例如 `/api/admin/models/usage` 必须在 `/{model_id}` 之前，否则会被 `int` 参数路由拦截。
 - **Function Calling subject 注入**：`search_cpa_knowledge` tool schema 只暴露 `query`/`collection`/`top_k`，**`subject` 由后端从会话上下文注入**（模型不可决定），避免模型乱填枚举。
-- **KB 检索降级策略**：`app/kb/client.py` 调 `POST /kb/search`，超时或 `5001` 重试 1 次后仍失败返回 `None`，链路**降级为大模型直答（不报错）**，降级话术分档附在答案尾部（不可用/空结果两档，v4.0）；每次检索调用均写 `kb_search_logs`（六态状态，写失败不影响主链路，v4.0）；`knowledge_point_ids` 必须落库 `messages.knowledge_point_ids`（JSON 数组）。
+- **KB 检索降级策略**：`app/kb/client.py` 调 `POST /kb/search`，超时或 `5001` 重试 1 次后仍失败返回 `None`，链路**降级为大模型直答（不报错）**，降级话术分档附在答案尾部（不可用/空结果两档，v4.0）；每次检索调用均写 `kb_search_logs`（六态状态，写失败不影响主链路，v4.0）；`knowledge_point_ids` 必须落库 `messages.knowledge_point_ids`（JSON 数组）。**v4.1**：solve 路径题库与教材两次检索都返回 `None` 时改用 `DEGRADED_SUFFIX`，**不与档位标注叠加**；降级下依然必须给出完整解答（不报错、不空答）。
 - **对话限流三态 429（v4.0）**：`POST /api/chat` 前置校验按序执行——每日配额（生效值见 `app/admin/entitlements.py`）→ 单人串行 → 并发闸门+有限排队（`app/chat/concurrency.py`，线程级方案勿改 asyncio），三种情形文案区分；并发资源必须在 finally 中配对归还。
 - **v4.0 新增路由用 `Depends(get_db)`**：存量 chat/admin 路由内的 `with get_db_ctx()` 属 P1 技术债择机偿还；仅后台任务（无请求上下文）才用 `get_db_ctx()`。
 - **科目枚举不得自造**：枚举字典由知识库侧维护，见 `app/kb/subjects.py::SUBJECT_REGISTRY`（只增不改，与 `doc/知识库科目枚举约定.md` 一致）；请求 `subject` 非法时回退 `DEFAULT_SUBJECT`（`cpa_acc`）。
-- **用量采集**：从 dashscope 流式响应的 `usage` 读取 `input_tokens`/`output_tokens`（Function Calling 两轮累加）；无 usage 时记 0。费用 = `tokens/1000 × 单价`，单价由管理员维护（不自动同步官方价）。
+- **用量采集（v4.1 修正）**：走百炼 OpenAI 兼容端点后读 `usage.prompt_tokens` / `usage.completion_tokens`（**不再是 dashscope 的 `input_tokens`/`output_tokens`**）；流式最后一块携带累计值，无 usage 时记 0。费用 = `tokens/1000 × 单价`，单价由管理员维护（不自动同步官方价）。`record_usage(..., task_type=...)` 按用途分账：`chat`/`exam`/`profile`/`ocr`/`verify`；**verify 的用量不计入对话累计**（校验模型可能与作答模型不同，混算费用会错）。
+- **测试打桩认准模块绑定（v4.1 踩过的坑）**：`solver.py` 与 `qwen_service.py` **各自** `from app.llm.client import create_client`，patch `qwen_service.create_client` 对 solve 路径**无效**，会真打百炼。反之 `kb_client` 两边都是 `from app.kb import client as kb_client`（同一模块对象），patch 一处即对两边生效。
 - **新增/修改接口的落点**：schema → `app/models.py`；路由 → 对应模块 `router.py`；注册 → `app/main.py`；类型 → 前端 `types/index.ts`；文档 → `doc/接口文档.md` + 本文件 §8。
 - **认证**：需登录接口带 `Authorization: Bearer <token>`；管理员接口用 `Depends(require_admin)`。
 - **响应格式**：成功直接返回业务数据（无外层包裹）；无数据时返回 `{"message": "ok"}`；错误返回 `{"detail": "..."}`。
@@ -176,11 +201,11 @@ MySQL 8.4（机器A，InnoDB，utf8mb4），建表见 `app/database.py`（`init_
 | `users` | `id, student_id(UNIQUE), password_hash, name, role('student'/'admin'), daily_question_limit(INT,可空), memory_enabled(TINYINT,可空), created_at` | 用户/学生；v4.0 新增两列为权益覆盖值，NULL=跟随全局默认（`app_settings`） |
 | `conversations` | `id, user_id, title, subject(VARCHAR(32),可空), created_at` | 会话，`subject` 存科目枚举值（如 `cpa_acc`） |
 | `messages` | `id, conversation_id, role, content, knowledge_point_ids(TEXT,可空), created_at` | 消息，`knowledge_point_ids` 存 KB 命中知识点编号 JSON 数组 |
-| `model_configs` | `id, provider('ali'/'deepseek'), model_name(UNIQUE), display_name, price_in, price_out, enabled, is_active, created_at` | 模型配置，`is_active=1` 为当前模型 |
-| `usage_logs` | `id, model_name, user_id, conversation_id, prompt_tokens, completion_tokens, total_tokens, cost, task_type(VARCHAR(16) DEFAULT 'chat'), created_at` | 用量与费用；v4.0 M2 新增 `task_type` 区分 `chat`/`exam` |
+| `model_configs` | `id, provider('ali'/'deepseek'), model_name(UNIQUE), display_name, price_in, price_out, enabled, is_active, created_at` | 模型配置，`is_active=1` 为当前模型。⚠️ `compute_cost()` 查不到模型时单价**回退 0.0**——任何会被调用的模型（含 v4.1 OCR 用的视觉模型 `qwen-vl-max`/`qwen-vl-plus`）都**必须在此表有记录**，否则 tokens 照记但 `cost` 恒为 0，这笔开销在用量报表里完全不可见。单价由管理员维护，不自动同步官方价 |
+| `usage_logs` | `id, model_name, user_id, conversation_id, prompt_tokens, completion_tokens, total_tokens, cost, task_type(VARCHAR(16) DEFAULT 'chat'), created_at` | 用量与费用；v4.0 M2 新增 `task_type`，v4.1 取值扩为 `chat`（对话）/`exam`（判卷）/`profile`（画像总结）/`ocr`（图片识别）/`verify`（题目同一性校验） |
 | `feedbacks` ✦ | `id, message_id(UNIQUE), user_id, rating('up'/'down'), reason(VARCHAR(500),可空), created_at` | 答案反馈（消息级点赞/点踩）；`message_id` 唯一，重复提交 UPSERT 覆盖 |
 | `kb_search_logs` ✦ | `id, user_id, conversation_id(可空), subject, collection, query, result_count, kp_ids(TEXT,可空), status, elapsed_ms, created_at` | 知识库检索日志（可观测）；`status` 六态：ok/empty/timeout/http_error/code_error/degraded |
-| `app_settings` ✦ | `id, setting_key(UNIQUE), setting_value(VARCHAR(255)), updated_at` | 全局设置（K-V）；值统一存字符串，读时按键转型（`app/settings_store.py`） |
+| `app_settings` ✦ | `id, setting_key(UNIQUE), setting_value(VARCHAR(255)), updated_at` | 全局设置（K-V）；值统一存字符串，读时按键转型（`app/settings_store.py`）。当前 6 键：`daily_question_limit_default`(20) / `memory_enabled_default`(1) / `chat_concurrency`(3) / `chat_queue_size`(5) / `profile_update_interval`(20) / **`practice_reveal_answer`(0，v4.1)**；后两个 bool 键见 `BOOL_KEYS`。键与默认值的单一事实来源是 `SETTING_DEFAULTS`，`seed.py` 幂等补齐 |
 | `exams` ✦✦ | `id, user_id, subject, chapter_ids(JSON,可空), status('ongoing'/'grading'/'graded'), question_count, total_score, obtained_score(DECIMAL,可空), created_at, submitted_at(可空)` | 试卷（v4.0 M2）；`idx_user_status` 索引支撑「每人仅 1 张 ongoing」 |
 | `exam_answers` ✦✦ | `id, exam_id, seq, question_id, question_type, question_snapshot(TEXT), full_score, student_answer(TEXT,可空), score(DECIMAL,可空), llm_reason(TEXT,可空), disputed(TINYINT DEFAULT 0), created_at` | 试卷答题（v4.0 M2）；`uk_exam_seq(exam_id,seq)` 唯一；`question_snapshot` 存题目全量 JSON（含答案解析） |
 | `student_profiles` ✦✦✦ | `user_id(INT PK), style_profile(VARCHAR 500,可空), dialog_count_since_update(INT DEFAULT 0), updated_at(DATETIME)` | 学生学习风格画像（v4.0 M3）；一人一行；`style_profile` 为 LLM 生成的画像文本（硬限 200 字符） |
@@ -198,7 +223,7 @@ Base URL：`http://localhost:8000`。权限：🟢 全员登录 ｜ 🔒 管理�
 | 模块 | 代码位置 | 数量 | 权限 | 说明 |
 |------|---------|------|------|------|
 | 认证 | `app/auth/` | 3 | 公开 / 🟢 | 登录取 JWT、当前用户信息、自助改密码 `PUT /api/me/password`（v4.0） |
-| 对话 | `app/chat/` | 6 | 🟢 | 流式对话（SSE，支持 `subject` 枚举，事件全集 `start/queue/kb_search/kb_refs/kp_ids/delta/suggestions/done/error`，限流三态 429）、答案反馈 `POST /api/feedback`（v4.0）、会话 CRUD |
+| 对话 | `app/chat/` | 6 | 🟢 | 流式对话 `POST /api/chat`（SSE，入参支持 `subject` 枚举与 `image_base64` 图片题目；v4.1 意图三分流 solve/practice/consult；事件全集 `start/queue/ocr/kb_search/kb_refs/kp_ids/match/delta/suggestions/done/error`，其中 `ocr` 为 v4.0 图片识别、**`match` 为 v4.1 solve 命中档位**；限流三态 429）、答案反馈 `POST /api/feedback`（v4.0）、会话 CRUD |
 | 管理员 | `app/admin/` | 12 | 🔒 | 学生增删改查、批量导入、使用统计；v4.0 新增：全局设置 GET/PUT、单人权益 `PUT /students/{id}/entitlements`、反馈明细 `GET /feedbacks`、检索报表 `GET /kb/stats` + `GET /kb/hot-kps` |
 | 大模型管理 | `app/llm/` | 6 | 🔒 | 模型 CRUD、`activate` 切换、`usage` 用量费用 |
 | 科目 | `app/kb/subjects.py` | 1 | 🟢 | `GET /api/subjects` 返回已上线科目枚举 |
@@ -206,6 +231,7 @@ Base URL：`http://localhost:8000`。权限：🟢 全员登录 ｜ 🔒 管理�
 | 学生记忆 | `app/profile/` | 5 | 🟢 / 🔒 | v4.0 M3 新增：学生端 3 个（错题本列表/重练判分/我的画像）+ 管理端 2 个（学生画像/全校错题统计） |
 
 > 反馈提交（`POST /api/feedback`）属对话模块（代码在 `chat/router.py`）；反馈明细/全局设置/权益/检索报表属管理员模块（代码在 `admin/router.py`）。
+> **v4.1 答题链路重构未新增/未删除任何 HTTP 接口**（总数仍 42）：变化全在 `POST /api/chat` 的内部链路（意图分流）与 SSE 事件类型（新增 `match`）上，`PUT /api/admin/settings` 则多了一个可写键 `practice_reveal_answer`。
 > 另有运维接口 `GET /api/health`（健康检查，无需认证；v4.0 升级为三字段 `status/mysql/kb`，任一依赖 fail 时 `status=degraded` 但 HTTP 仍 200，KB 探测见 `app/kb/client.py::probe`）。全部接口的路径与字段明细见 `doc/接口文档.md`。
 
 ---
@@ -218,6 +244,7 @@ Base URL：`http://localhost:8000`。权限：🟢 全员登录 ｜ 🔒 管理�
 2. **单一事实来源**：
    - 接口明细只写在 `doc/接口文档.md`；本文件 §8 只维护「一览」。
    - 技术栈版本以 `frontend/package.json` / `backend/requirements.txt` 为准，文档引用需与其一致。
+   - **全部文档只放 `doc/` 一个目录**（设计/方案类放 `doc/plans/`，运维类放 `doc/ops/`），**不得新建平级的 `docs/`**。2026-08 曾误建 `docs/plans/` 导致设计文档分裂两处，已于本轮归并。
 3. **新增接口的文档动作**：更新 `doc/接口文档.md` 明细 + 本文件 §8 一览 +（如涉及）§7 表结构。
 4. **版本标注**：v2.0 及以后新增内容标注版本，便于区分历史。
 5. **不要编造**：不确定的字段/行为先读代码（`Grep`/`Read`）再写；宁可留 TODO 也不臆测。

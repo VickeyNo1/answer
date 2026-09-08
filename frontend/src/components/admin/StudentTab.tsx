@@ -812,6 +812,21 @@ function GlobalSettingsModal({ onClose }: { onClose: () => void }) {
               学生记忆功能总开关
             </label>
           </div>
+          <div>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={settings.practice_reveal_answer}
+                onChange={(e) =>
+                  setSettings((prev) =>
+                    prev ? { ...prev, practice_reveal_answer: e.target.checked } : prev
+                  )
+                }
+                className="rounded border-gray-300"
+              />
+              练习题附参考答案（关闭则只出题，让学生先自行作答）
+            </label>
+          </div>
           {error && (
             <div className="rounded-lg bg-red-50 px-4 py-2 text-sm text-red-600">{error}</div>
           )}

@@ -119,6 +119,28 @@ def get_active_model() -> str:
     return get_settings().CHAT_MODEL
 
 
+# task_type → config 中的覆盖项字段名（对话模型不在此列，已由后台 active 控制）
+_TASK_MODEL_FIELDS = {
+    "judge": "JUDGE_MODEL",
+    "profile": "PROFILE_MODEL",
+    "verify": "VERIFY_MODEL",
+}
+
+
+def get_model_for(task_type: str) -> str:
+    """按用途解析模型名：.env 配了对应的 *_MODEL 就用它，否则跟随后台激活模型
+
+    判卷只在交卷时跑、量小，但出错直接影响成绩并污染错题本与画像；校验只输出一个
+    JSON、可以用最便宜档。两者与对话共用一个模型不合理，故按用途分开配。
+    """
+    field = _TASK_MODEL_FIELDS.get(task_type)
+    if field:
+        override = (getattr(get_settings(), field, "") or "").strip()
+        if override:
+            return override
+    return get_active_model()
+
+
 # ========== 用量与费用 ==========
 
 def compute_cost(model_name: str, prompt_tokens: int, completion_tokens: int) -> float:

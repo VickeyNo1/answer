@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     # 视觉（OCR）模型：图片题目识别用，可通过 .env 覆盖
     VISION_MODEL: str = "qwen-vl-max"
 
+    # 分用途模型覆盖（空串 = 跟随后台激活模型，见 llm/store.py::get_model_for）
+    # 判卷/画像/题目同一性校验的敏感度与调用量与对话完全不同，共用一个模型不合理
+    JUDGE_MODEL: str = ""
+    PROFILE_MODEL: str = ""
+    VERIFY_MODEL: str = ""
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
