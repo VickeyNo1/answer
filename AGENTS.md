@@ -88,7 +88,7 @@ v4.1 答题链路重构新增要点（设计说明见 `doc/plans/2026-09-07-答�
 | Excel 解析 | openpyxl（学生批量导入） | 3.1.* | `app/admin/` |
 | Python 环境 | uv + Python 3.11+ | — | `backend/.venv` |
 
-> ⚠️ **所有 LLM 调用一律走 `create_client()`（百炼 OpenAI 兼容端点 `/compatible-mode/v1`），禁止引入 `dashscope.Generation.call`。** 迁移原因：qwen3.5+ 系列在 DashScope 原生 SDK 里要用 `MultiModalConversation`，端点按模型分叉；兼容端点一个 `base_url` 通吃。DeepSeek 亦走百炼统一接入，复用 `DASHSCOPE_API_KEY`，无需独立 SDK 或分支。
+> ⚠️ **所有 LLM 调用一律走 `create_client()`（OpenAI 兼容端点），禁止引入 `dashscope.Generation.call`。** 迁移原因：qwen3.5+ 系列在 DashScope 原生 SDK 里要用 `MultiModalConversation`，端点按模型分叉；兼容端点一个 `base_url` 通吃。DeepSeek 亦走百炼统一接入，复用 `DASHSCOPE_API_KEY`，无需独立 SDK 或分支。**v4.1 消融实验起 `create_client(model_name)` 按模型名路由厂商**：`glm` 开头 → 智谱自有端点（`ZHIPU_API_KEY`/`ZHIPU_BASE_URL`，用户自购资源包），其余 → 百炼。
 > `dashscope` 依赖已于 2026-09-08 从 `pyproject.toml` / `requirements.txt` / `uv.lock` 移除（全仓零 import）。
 
 ---
@@ -105,7 +105,7 @@ v4.1 答题链路重构新增要点（设计说明见 `doc/plans/2026-09-07-答�
 | `models.py` | 全部 Pydantic 请求/响应模型 | 新增接口先在此定义 schema |
 | `settings_store.py` | `app_settings` 全局设置：内存缓存 + 类型转换（v4.0） | 启动时全量加载，PUT 更新后刷新缓存；值统一字符串落库、读时按键转 int/bool；`BOOL_KEYS` 内的键按 bool 输出（v4.1 增 `practice_reveal_answer`） |
 | `auth/` | 登录、JWT、依赖、自助改密码 | `deps.py`：`get_current_user`、`require_admin`；`router.py` 另含 `me_router`（`PUT /api/me/password`，v4.0） |
-| `chat/` | 对话主流程 | `router.py`（SSE + 意图分流 + 对话 CRUD + `POST /api/feedback`）、**`intent.py`（意图三分类纯规则，v4.1）**、**`solver.py`（solve 三档流水线 `run_solve` + practice 出题 `run_practice` + LLM 二次校验 `verify_same_question`，v4.1；校验一次调用同时输出 `same/index`（定档）与 `relevant_indexes`（相关性下限，v4.1 修复轮））**、`qwen_service.py`（`extract_question_text` 图片 OCR、`build_messages`、`stream_chat` consult 路径 Function Calling、`stream_answer` 三处共用的流式生成+追问建议解析；v4.1 修复轮：`SYSTEM_PROMPT` 加「出处纪律」硬约束 + `claims_source`/`UNVERIFIED_SUFFIX` 挡住「不检索却编造教材出处」）、`memory.py`（多轮历史）、`concurrency.py`（线程级并发闸门/单人串行/有限排队，v4.0） |
+| `chat/` | 对话主流程 | `router.py`（SSE + 意图分流 + 对话 CRUD + `POST /api/feedback`）、**`intent.py`（意图三分类纯规则，v4.1）**、**`solver.py`（solve 三档流水线 `run_solve` + practice 出题 `run_practice` + LLM 二次校验 `verify_same_question`，v4.1；校验一次调用同时输出 `same/index`（定档）与 `relevant_indexes`（相关性下限，v4.1 修复轮）；similar/none 档补查 standards 准则原文库，2026-09-16）**、`qwen_service.py`（`extract_question_text` 图片 OCR、`build_messages`、`stream_chat` consult 路径 Function Calling、`stream_answer` 三处共用的流式生成+追问建议解析；v4.1 修复轮：`SYSTEM_PROMPT` 加「出处纪律」硬约束 + `claims_source`/`UNVERIFIED_SUFFIX` 挡住「不检索却编造教材出处」）、`memory.py`（多轮历史）、`concurrency.py`（线程级并发闸门/单人串行/有限排队，v4.0） |
 | `kb/` | 知识库对接（v3.0） | `client.py`（`POST /kb/search`，超时/5001 重试1次后降级；v4.0 新增：每次检索写 `kb_search_logs`、`probe()` 供健康检查探测）、`prompt.py`（`SEARCH_TOOL` schema + 结果拼接 + `collect_kp_ids`；v4.1 新增：`content_type` 中文标注与 `prefer="solve"` 定向排序、`include_answer` 默认剪裁、`sub_question_text` 兼容字符串/对象两种子问；v4.1 修复轮新增 `MARKER_NOTICE` + `append_marker_notice()`——禁止模型把「【题目1｜…】」内部标头抄进答案）、`subjects.py`（科目注册表 + `GET /api/subjects`） |
 | `admin/` | 管理后台 | `router.py`（学生增删改查/批量、统计；v4.0 新增：全局设置 GET/PUT、单人权益、反馈明细、检索报表 kb/stats + kb/hot-kps；v4.1 修复轮：`delete_student` 由只删 3 张表改为**全量级联 8 张关联表 + users 本身**，`usage_logs` 保留但置空归属，见 §6）、**`eval.py`（批量评测单题作答端点 `POST /api/admin/eval/answer`，v4.1；独立成模块而非塞进 `router.py`，因为它要 import 8 个 chat 域符号）**、`stats.py`（聚合统计）、`entitlements.py`（权益生效值：users 覆盖值 ?? 全局默认，v4.0） |
 | `llm/` | 大模型管理 | **`client.py`（`create_client()` 百炼 OpenAI 兼容端点工厂，全项目唯一 LLM 入口）**、`router.py`（模型 CRUD/activate/usage；v4.1 修复轮：删除 `is_active=1` 的模型返回 **409**，否则全表无激活模型、系统静默回退到 `.env` 幻影模型名且费用恒记 0）、`store.py`（模型与用量数据访问 + 费用计算 + `record_usage(task_type=...)`；v4.1 新增 `get_model_for(task_type)` 分用途选模型、`find_unpriced_models()` 供启动自检） |
@@ -184,9 +184,15 @@ uv run python scripts/batch_eval.py --xlsx "题库.xlsx" --limit 8
 uv run python scripts/batch_eval.py --xlsx "题库.xlsx" --ids T001,T057,T151
 uv run python scripts/batch_eval.py --xlsx "题库.xlsx" --intent auto   # 对照组
 uv run python scripts/batch_eval.py --xlsx "题库.xlsx" --resume        # 断点续跑
+
+# 消融实验（v4.1，2026-09-16，专家要求 A/B/C × 3 模型；A=bare / B=prompt_only / C=full）
+uv run python scripts/batch_eval.py --xlsx "题库.xlsx" --mode bare            # A 组，跟随 EVAL_MODEL
+uv run python scripts/batch_eval.py --xlsx "题库.xlsx" --mode prompt_only --model glm-5.2
+# ⚠️ --model 钉死的模型必须在 model_configs 有行，否则端点 400（防费用静默记 0）；
+#    glm-* 自动走智谱端点（ZHIPU_API_KEY），其余走百炼。各组输出按 {mode}_{model} 分文件
 ```
 
-> ⚠️ **三条实测约束**：① 必须打 `localhost:8000`，走 Nginx 会被 `proxy_read_timeout` 60s 掐断长答案；② `.env` 未设 `MYSQL_DB` 时写的是**生产库 `answer`**——400 题会留下约 800 行 `usage_logs`（每题一次 `eval` + 一次 `verify`，`user_id` 均为 NULL），对话表与 `kb_search_logs` 零写入；③ 实测 8 题 / 并发 3 用时 42 秒、0.044 元，400 题外推约 **35 分钟 / 2.2 元**。
+> ⚠️ **三条实测约束**：① 必须打 `localhost:8000`，走 Nginx 会被 `proxy_read_timeout` 60s 掐断长答案；② `.env` 未设 `MYSQL_DB` 时写的是**生产库 `answer`**——400 题会留下约 800 行 `usage_logs`（每题一次 `eval` + 一次 `verify`，`user_id` 均为 NULL），对话表与 `kb_search_logs` 零写入；③ 实测 8 题 / 并发 3 用时 42 秒、0.044 元，400 题外推约 **35 分钟 / 2.2 元**。消融 8 组矩阵（A×3 + B×3 + C×2，C-flash 复用既有结果）= 3200 次生成，前置条件见 `doc/ops/工作状态.md`。
 > ⚠️ **基准题库与评测输出都不得入库**：`backend/eval_out/` 已 gitignore，xlsx 原件放在仓库外。题库自带金标准答案，一旦提交等于把答案泄进版本历史。
 
 ### 前端（在 `frontend/` 目录）
@@ -205,8 +211,8 @@ npx tsc --noEmit       # 类型检查
 
 ## 6. 编码约定与注意事项（必读）
 
-- **所有 LLM 调用一律走 `app/llm/client.py::create_client()`（v4.1）**：百炼 OpenAI 兼容端点，**禁止引入 `dashscope.Generation.call` / `MultiModalConversation`**。新加 LLM 调用点时先 `from app.llm.client import create_client`，模型名从 `llm_store.get_active_model()` 或 `get_model_for(task_type)` 取。
-- **`extra_body={"enable_thinking": False}` 是硬编码，换厂商前必须确认兼容性（v4.1）**：现有 6 处——`qwen_service.py`（OCR / `stream_answer` / `stream_chat` 首轮）、`solver.py`（verify）、`exam/judger.py`、`profile/summarizer.py`。⚠️ 智谱 GLM-5.3 系列**强制思考**，传 disabled 会直接请求失败（且思维链按输出 token 计费）；换智谱只能选 `ZHIPU/GLM-5.2`。
+- **所有 LLM 调用一律走 `app/llm/client.py::create_client()`（v4.1）**：OpenAI 兼容端点，**禁止引入 `dashscope.Generation.call` / `MultiModalConversation`**。新加 LLM 调用点时先 `from app.llm.client import create_client`，模型名从 `llm_store.get_active_model()` 或 `get_model_for(task_type)` 取；**知道模型名时传 `create_client(model_name)`**（glm 开头路由智谱自有端点，其余走百炼，2026-09-16 消融实验新增）。
+- **`extra_body` 关思考参数已收口到 `completion_extra(model_name)`（2026-09-16）**：按厂商分——百炼 `{"enable_thinking": False}`、智谱 GLM `{"thinking": {"type": "disabled"}}`。`qwen_service.stream_answer`/`stream_chat` 与 `solver.verify_same_question` 已用它按模型自动选；仍硬编码 `enable_thinking` 的 3 处（`qwen_service.extract_question_text` OCR、`exam/judger.py`、`profile/summarizer.py`）只可能调百炼模型，暂不改。⚠️ 智谱 GLM-5.3 系列**强制思考**，传 disabled 会直接请求失败（且思维链按输出 token 计费）；智谱只能用 GLM-5.2 及以下。
 - **题库 `answer`/`explanation` 默认剪裁（v4.1）**：`format_results(data, include_answer=False)`，需要答案的调用点**必须显式传 `True`**。当前 4 个调用点：**无条件 `True`** 仅 `run_solve` 的 exact/similar 两档（就是学生问的那道题／作范例的相似题）；`run_practice` 与 `qwen_service.stream_chat`（consult 老路径）传的是管理端开关 `practice_reveal_answer` 的值（**默认 `False`**）。契约见 `doc/知识库对接文档.md`「先答题后判卷场景务必剪裁」。剪裁时附「（参考答案与解析已省略，请先自行作答）」，且**子问对象自带的答案也会被剪**（`sub_question_text`），别从后门漏。
 - **意图分流与检索 query 取法（v4.1）**：`classify_intent` 判定顺序即优先级（图片 → 强 solve 标记 → practice 标记 → 弱 solve 证据 → consult），**不可调换**——「这道练习题怎么做」必须判 solve。solve/practice 的检索 query 取 `ocr_text or req.message`，**不取组合后的 `effective_message`**（「请解答\n\n【图片识别内容】」前缀会污染向量检索），截断 1000 字符。意图与档位**本轮不落库**（`messages` 无对应列），档位靠答案末尾标注文案随 `content` 落库。
 - **solve 三档判定契约（v4.1 修复轮）**：`verify_same_question` 一次调用同时产出两组信号——`same`/`index` 定 exact，`relevant_indexes` 当**相关性下限**（检索服务本身没有下限，乱码 query 也返回满 top_k 条，而 `score` 只是重排后的排序分、跨请求不可比，所以只能用模型判）。⚠️ **`relevant_indexes` 的 `None` 与 `[]` 是两种信号，别合并**：`None` = 没拿到判断（字段缺失/不是数组/序号全部越界/调用抛异常）→ 沿用旧的保守行为，全量候选注入 similar 档；`[]` = 模型明确说没有一道相关 → 不注入噪声，走 none 档独立推导。合并的后果是二选一都错：要么 none 档永不可达，要么每次校验超时都白白丢掉可用的相似题参考。因此 **none 档有两个触发条件**（题库无结果 / 候选被判定全不相关）。`same=false` 一律归 similar，**校验失败绝不归 exact**——误报「找到原题」会让学生拿着错答案去考试。
@@ -216,8 +222,9 @@ npx tsc --noEmit       # 类型检查
 - **PyMySQL 返回类型陷阱**：`fetchall()` 结果需 `list()` 化再传给 Pydantic；`SUM()` 返回 `Decimal`（用 `int()`/`float()` 包裹）；`DATE` 列返回 `date`、`created_at` 返回 `datetime`（作为字符串字段时需 `str()`）。
 - **FastAPI 路由顺序**：静态路径要声明在动态路径之前。例如 `/api/admin/models/usage` 必须在 `/{model_id}` 之前，否则会被 `int` 参数路由拦截。
 - **Function Calling subject 注入**：`search_cpa_knowledge` tool schema 只暴露 `query`/`collection`/`top_k`，**`subject` 由后端从会话上下文注入**（模型不可决定），避免模型乱填枚举。
-- **`log_enabled` 是评测专用开关，新增检索调用点必须继续透传（v4.1）**：`kb_client.search(..., log_enabled=False)` **只抑制 `kb_search_logs` 落库，日志照打**（开关卡在 `_log_search` 的 INSERT 之前而非函数首行——排查批量跑要看日志，要抑制的只是报表数据）。动机：批量评测 400 题 × 2 次检索 = 800 行，灌进去会把给使用方看的检索质量报表彻底冲掉。目前透传链是 `admin/eval.py` → `run_solve` / `run_practice` / `stream_chat` → `kb_client.search`（共 6 个 search 调用点：solve 2、practice 2、consult 1，另 `probe()` 不写日志）。**在这三处链路里新加检索调用时，别忘了把 `log_enabled` 一起传下去**，漏传不会报错，只会静默污染报表。普通对话路径一律用默认值 `True`。
-- **KB 检索降级策略**：`app/kb/client.py` 调 `POST /kb/search`，超时或 `5001` 重试 1 次后仍失败返回 `None`，链路**降级为大模型直答（不报错）**，降级话术分档附在答案尾部；每次检索调用均写 `kb_search_logs`（六态状态，写失败不影响主链路，v4.0）；`knowledge_point_ids` 必须落库 `messages.knowledge_point_ids`（JSON 数组）。**v4.1**：solve 路径题库与教材两次检索都返回 `None` 时改用 `DEGRADED_SUFFIX`，**不与档位标注叠加**；降级下依然必须给出完整解答（不报错、不空答）。
+- **`log_enabled` 是评测专用开关，新增检索调用点必须继续透传（v4.1）**：`kb_client.search(..., log_enabled=False)` **只抑制 `kb_search_logs` 落库，日志照打**（开关卡在 `_log_search` 的 INSERT 之前而非函数首行——排查批量跑要看日志，要抑制的只是报表数据）。动机：批量评测 400 题 × 2 次检索 = 800 行，灌进去会把给使用方看的检索质量报表彻底冲掉。目前透传链是 `admin/eval.py` → `run_solve` / `run_practice` / `stream_chat` → `kb_client.search`（共 7 个 search 调用点：solve 3、practice 2、consult 1，另 `probe()` 不写日志）。**在这三处链路里新加检索调用时，别忘了把 `log_enabled` 一起传下去**，漏传不会报错，只会静默污染报表。普通对话路径一律用默认值 `True`。
+- **KB 检索降级策略**：`app/kb/client.py` 调 `POST /kb/search`，超时或 `5001` 重试 1 次后仍失败返回 `None`，链路**降级为大模型直答（不报错）**，降级话术分档附在答案尾部；每次检索调用均写 `kb_search_logs`（六态状态，写失败不影响主链路，v4.0）；`knowledge_point_ids` 必须落库 `messages.knowledge_point_ids`（JSON 数组）。**v4.1**：solve 路径题库、教材、standards 三次检索全部返回 `None` 时改用 `DEGRADED_SUFFIX`，**不与档位标注叠加**；降级下依然必须给出完整解答（不报错、不空答）。
+- **standards 准则原文库接入（2026-09-16）**：知识库侧已上线 `standards` collection（54 份准则/解释原文，含 2026 年解释第19/20号）。三处约定：① `SEARCH_TOOL` 的 collection enum 含 `standards`（consult 由模型自主选用）；② `run_solve` 的 **similar/none 档各补查一次 standards top_k=3**（query 用原始提问——题面常直接点名新解释，教材定向 query 反而丢掉该信号），exact 档保持快路径不查；③ `format_results` 对 standards 走独立的 `_format_standards` 渲染（其 chapter/section 恒空串、kp 恒空、content_type 是 article/notice_item，落 `_format_textbook` 会渲染出空标头），资料头部带「条文原文与既有记忆冲突时以原文为准」——这是针对实测 5 道 0 分题（模型旧口径 vs 2026 新解释）的定向指令。standards 检索失败（None）静默跳过，不单独算降级（降级 = 三库全空）。
 - **「没资料」三档标注不可合并（v4.1 修复轮）**：`qwen_service` 现有三种末尾标注，对应三种**运维上要分开归因**的情形——`DEGRADED_SUFFIX`（查了，检索服务挂了）/ `EMPTY_SUFFIX`（查了，没命中）/ `UNVERIFIED_SUFFIX`（**压根没查**：consult 由模型自主决定是否调工具，实测它会跳过检索直接答、还顺手编出「《XX教材》第X章」）。第三档由 `claims_source()` 判定：直答正文出现教材/准则书名号、章号、知识点编号或「根据教材」一类措辞才贴标注，寒暄与纯计算讲解不贴（否则每条闲聊都多一句废话）。`SYSTEM_PROMPT` 的「出处纪律」是提示词侧的同一件事（只能逐字引用检索结果里的标题/章节/知识点编号；准则名可提但不得编条文号；没检索就不得声称教材依据），但**提示词不是护栏**，确定性标注才是。
 - **对话限流三态 429（v4.0）**：`POST /api/chat` 前置校验按序执行——每日配额（生效值见 `app/admin/entitlements.py`）→ 单人串行 → 并发闸门+有限排队（`app/chat/concurrency.py`，线程级方案勿改 asyncio），三种情形文案区分；并发资源必须在 finally 中配对归还。
 - **v4.0 新增路由用 `Depends(get_db)`**：存量 chat/admin 路由内的 `with get_db_ctx()` 属 P1 技术债择机偿还；仅后台任务（无请求上下文）才用 `get_db_ctx()`。

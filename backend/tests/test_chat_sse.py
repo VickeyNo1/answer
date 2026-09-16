@@ -114,7 +114,7 @@ class TestChatDirectAnswer:
     def _mock(self, monkeypatch):
         monkeypatch.setattr(
             "app.chat.qwen_service.create_client",
-            lambda: FakeClient(_direct_answer_streams()),
+            lambda *a, **k: FakeClient(_direct_answer_streams()),
         )
 
     def test_chat_without_token(self, client):
@@ -224,7 +224,7 @@ class TestChatToolCall:
             }
 
         monkeypatch.setattr("app.chat.qwen_service.create_client",
-                            lambda: FakeClient(_tool_call_streams()))
+                            lambda *a, **k: FakeClient(_tool_call_streams()))
         monkeypatch.setattr("app.chat.qwen_service.kb_client.search", fake_search)
 
     def test_chat_triggers_kb_search(self, client, student_headers):
@@ -385,7 +385,7 @@ class TestConsultToolResult:
     def _run(self, monkeypatch, kb_data):
         from app.chat import qwen_service
         fake = FakeClient(_tool_call_streams())
-        monkeypatch.setattr(qwen_service, "create_client", lambda: fake)
+        monkeypatch.setattr(qwen_service, "create_client", lambda *a, **k: fake)
         monkeypatch.setattr(qwen_service.kb_client, "search", lambda *a, **kw: kb_data)
         events = list(qwen_service.stream_chat(
             [{"role": "system", "content": qwen_service.SYSTEM_PROMPT},
@@ -463,7 +463,7 @@ class TestConsultUnverifiedSuffix:
     def _run(self, monkeypatch, round1_chunks):
         from app.chat import qwen_service
         fake = FakeClient([list(round1_chunks)])
-        monkeypatch.setattr(qwen_service, "create_client", lambda: fake)
+        monkeypatch.setattr(qwen_service, "create_client", lambda *a, **k: fake)
         events = list(qwen_service.stream_chat(
             [{"role": "system", "content": qwen_service.SYSTEM_PROMPT},
              {"role": "user", "content": "存货怎么计价？"}],
@@ -508,7 +508,7 @@ class TestConsultUnverifiedSuffix:
         """查过知识库就归 DEGRADED/EMPTY 两档，第三种标注不得混进来"""
         from app.chat import qwen_service
         fake = FakeClient(_tool_call_streams())
-        monkeypatch.setattr(qwen_service, "create_client", lambda: fake)
+        monkeypatch.setattr(qwen_service, "create_client", lambda *a, **k: fake)
         monkeypatch.setattr(qwen_service.kb_client, "search",
                             lambda *a, **kw: {"collection": "textbook", "results": []})
         events = list(qwen_service.stream_chat(
@@ -551,7 +551,7 @@ class TestConsultSourceDisciplinePrompt:
         """编造发生在二轮，纪律必须原样带到二轮 system（只在其后追加建议指令）"""
         from app.chat import qwen_service
         fake = FakeClient(_tool_call_streams())
-        monkeypatch.setattr(qwen_service, "create_client", lambda: fake)
+        monkeypatch.setattr(qwen_service, "create_client", lambda *a, **k: fake)
         monkeypatch.setattr(qwen_service.kb_client, "search", lambda *a, **kw: {
             "collection": "textbook",
             "results": [{"knowledge_point_ids": ["KP-001"], "chapter": "第一章",

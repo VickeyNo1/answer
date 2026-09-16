@@ -14,7 +14,7 @@ import logging
 import re
 
 from app.config import get_settings
-from app.llm.client import create_client
+from app.llm.client import completion_extra, create_client
 from app.llm import store as llm_store
 from app.kb import client as kb_client
 from app.kb.prompt import (
@@ -166,7 +166,7 @@ def stream_answer(client, model: str, messages: list[dict], suffix: str = ""):
         model=model,
         messages=messages,
         stream=True,
-        extra_body={"enable_thinking": False},
+        extra_body=completion_extra(model),
     )
 
     round_usage = {"in": 0, "out": 0}
@@ -245,7 +245,7 @@ def stream_chat(
     usage_acc = {"prompt_tokens": 0, "completion_tokens": 0}
 
     try:
-        client = create_client()
+        client = create_client(model)
 
         # ===== 第 1 轮：带工具流式调用 =====
         stream = client.chat.completions.create(
@@ -253,7 +253,7 @@ def stream_chat(
             messages=messages,
             tools=[SEARCH_TOOL],
             stream=True,
-            extra_body={"enable_thinking": False},
+            extra_body=completion_extra(model),
         )
 
         tool_calls: dict[int, dict] = {}  # index -> {id, name, arguments}

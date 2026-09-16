@@ -141,7 +141,8 @@ def login(base_url: str, user: str, password: str, client: httpx.Client) -> str:
 
 
 def answer_one(client: httpx.Client, base_url: str, token: str, question: str,
-               intent: str, timeout: float, retries: int = 2) -> dict:
+               intent: str, timeout: float, mode: str = "full", model: str = "",
+               retries: int = 2) -> dict:
     """单题作答。网络/5xx 重试，4xx 不重试（重试也没用）。"""
     last_err = None
     for attempt in range(retries + 1):
@@ -149,7 +150,8 @@ def answer_one(client: httpx.Client, base_url: str, token: str, question: str,
             resp = client.post(
                 f"{base_url}/api/admin/eval/answer",
                 headers={"Authorization": f"Bearer {token}"},
-                json={"question": question, "intent": intent},
+                json={"question": question, "intent": intent,
+                      "mode": mode, "model_name": model},
                 timeout=timeout,
             )
             if resp.status_code == 200:
@@ -161,10 +163,10 @@ def answer_one(client: httpx.Client, base_url: str, token: str, question: str,
             last_err = f"{type(e).__name__}: {e}"
         if attempt < retries:
             time.sleep(2 * (attempt + 1))
-    return {"error": last_err, "intent": intent, "tier": None, "answer": "",
-            "prompt_tokens": 0, "completion_tokens": 0, "elapsed_ms": 0,
-            "model": "", "kp_ids": [], "kb_refs": [], "verify_reason": "",
-            "question_id": None}
+    return {"error": last_err, "intent": intent, "mode": mode, "tier": None,
+            "answer": "", "prompt_tokens": 0, "completion_tokens": 0,
+            "elapsed_ms": 0, "model": "", "kp_ids": [], "kb_refs": [],
+            "verify_reason": "", "question_id": None}
 
 
 def compact_refs(refs: list[dict]) -> str:
@@ -219,9 +221,11 @@ def run_batch(questions: list[dict], done: dict[str, dict], args, token: str,
 
         def work(q: dict) -> tuple[dict, dict]:
             resp = answer_one(client, args.base_url, token, q["question"],
-                              args.intent, args.timeout)
+                              args.intent, args.timeout,
+                              mode=args.mode, model=args.model)
             rec = {
                 "id": q["id"],
+                "mode": resp.get("mode") or args.mode,
                 "intent": resp.get("intent") or args.intent,
                 "tier": resp.get("tier"),
                 "question_id": resp.get("question_id"),
@@ -324,7 +328,9 @@ def _add_summary_sheet(wb: Workbook, questions: list[dict], results: dict[str, d
     ws.append(["跑批参数"])
     ws.cell(row=1, column=1).font = Font(bold=True)
     for k, v in (("题库题数", len(questions)), ("实际跑成", ran), ("未跑", missing),
-                 ("报错", len(errors)), ("--intent", args.intent),
+                 ("报错", len(errors)), ("--mode", args.mode),
+                 ("--model", args.model or "(跟随 EVAL_MODEL/激活模型)"),
+                 ("--intent", args.intent),
                  ("--concurrency", args.concurrency), ("--base-url", args.base_url)):
         ws.append([k, v])
     ws.append(["输入token合计", sum(r["prompt_tokens"] for r in recs)])
@@ -381,6 +387,13 @@ def main() -> None:
                         help="管理员密码，缺省读环境变量 EVAL_PASSWORD，再缺省交互输入")
     parser.add_argument("--intent", choices=["solve", "auto"], default="solve",
                         help="solve=强制走答题链路（默认）；auto=按 classify_intent 分流作对照组")
+    parser.add_argument("--mode", choices=["full", "prompt_only", "bare"], default="full",
+                        help="消融实验分组：full=完整系统（C组，默认）；"
+                             "prompt_only=模型+提示词无检索（B组）；bare=裸模型直答（A组）")
+    parser.add_argument("--model", default="",
+                        help="指定作答模型（须已在 model_configs 建记录）；空=跟随后端 EVAL_MODEL/激活模型")
+    parser.add_argument("--tag", default="",
+                        help="输出文件标签；缺省 full+未指定模型时沿用 --intent，否则 <mode>_<model>")
     parser.add_argument("--limit", type=int, default=0, help="只跑前 N 题（0=全部）")
     parser.add_argument("--ids", default="", help="只跑指定题号，逗号分隔，如 T057,T058")
     parser.add_argument("--concurrency", type=int, default=3, help="并发数，默认 3")
@@ -412,7 +425,14 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    tag = args.intent
+    # full+默认模型沿用旧的 intent 标签（与既有 checkpoint 兼容）；其余按组隔离，
+    # 8 轮消融跑批的产物与 --resume 互不覆盖
+    if args.tag:
+        tag = args.tag
+    elif args.mode == "full" and not args.model:
+        tag = args.intent
+    else:
+        tag = f"{args.mode}_{args.model or 'default'}"
     ckpt_path = out_dir / f"checkpoint_{tag}.jsonl"
     xlsx_out = out_dir / f"评测结果_{tag}_{stamp}.xlsx"
 

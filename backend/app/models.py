@@ -448,16 +448,30 @@ class EvalAnswerRequest(BaseModel):
                实测 400 题里 86.5% 会被 classify_intent 判成 consult，而
                consult 路径没有三档命中、不碰题库，评测不到答题能力。
       - auto   按 classify_intent 分流，作对照组，用于量化上面这个偏差。
+
+    mode 取值（消融实验三组，2026-09-16）：
+      - full        模型+提示词+向量知识库（完整系统，默认，即 C 组）
+      - prompt_only 模型+提示词，检索桩空、自然走 none 档 prompt（B 组）；
+                    强制按 solve 处理，req.intent 被忽略
+      - bare        裸模型直答：单条 user 消息，无 system prompt、无检索、
+                    无后处理（A 组）；req.intent 被忽略
+
+    model_name 非空时覆盖 EVAL_MODEL/激活模型（消融实验要换模型跑同一组题）；
+    必须是 model_configs 里真实存在的模型名，否则 400——缺单价行会让这批
+    评测的 cost 恒记 0，重蹈幻影模型名覆辙。
     """
     question: str
     subject: str = "cpa_acc"
     intent: str = "solve"
+    mode: str = "full"
+    model_name: str = ""
 
 
 class EvalAnswerOut(BaseModel):
     """单题评测结果：档位与用量均为结构化字段，供脚本写 checkpoint 与导出"""
     question: str
     intent: str
+    mode: str = "full"
     tier: str | None = None
     question_id: str | None = None
     verify_reason: str = ""

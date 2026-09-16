@@ -223,7 +223,7 @@ class TestChainArguments:
         assert args[3] is None, "user_id 必须传 None（usage_logs 该列可空、无外键）"
         assert args[4] is None, "conversation_id 必须传 None（不落库对话）"
         assert args[5] == CONSULT_SHAPED, "query_text 必须是题干原文"
-        assert kw == {"log_enabled": False}
+        assert kw == {"log_enabled": False, "disable_kb": False, "verify_model": None}
 
     def test_practice_gets_null_identity_and_suppressed_logging(self, chain):
         _call(question=PRACTICE_SHAPED, intent="auto")
@@ -299,8 +299,11 @@ class TestGoldIsolation:
     def test_request_has_exactly_one_content_field(self):
         """基准题库自带金标准答案与关键得分点，那些字段一旦进请求体就等于把答案
         喂给被测系统，评测结果直接作废。谁给这个 schema 加内容字段，这条就红。
+        （mode/model_name 是实验控制参数，不是内容字段，2026-09-16 消融实验加入）
         """
-        assert set(EvalAnswerRequest.model_fields) == {"question", "subject", "intent"}
+        assert set(EvalAnswerRequest.model_fields) == {
+            "question", "subject", "intent", "mode", "model_name",
+        }
 
     def test_smuggled_gold_fields_never_reach_the_chain(self, chain):
         """脚本若误把金标准一起 POST 上来，必须在 schema 层被丢掉
@@ -427,7 +430,7 @@ def live_chain(monkeypatch):
     monkeypatch.setattr("app.kb.client.httpx.post", _post)
     monkeypatch.setattr(
         "app.chat.solver.create_client",
-        lambda: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())),
+        lambda *a, **k: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())),
     )
     return posts
 
@@ -474,9 +477,10 @@ class TestIsolationOnRealDb:
 
         assert r.status_code == 200
         body = r.json()
-        # 两次检索真的发生了（questions + textbook），才谈得上「抑制」
+        # 三次检索真的发生了（questions + textbook + standards），才谈得上「抑制」
         assert [p["payload"]["collection"] for p in live_chain] == ["questions",
-                                                                   "textbook"]
+                                                                   "textbook",
+                                                                   "standards"]
         assert body["tier"] == "similar"
         assert "权责发生制。" in body["answer"]
         assert body["model"] and body["prompt_tokens"] == 222
@@ -489,3 +493,90 @@ class TestIsolationOnRealDb:
             == before["eval"] + 1
         assert _count("SELECT COUNT(*) c FROM usage_logs WHERE task_type='eval' "
                       "AND user_id IS NULL") == before["eval"] + 1
+
+
+# ========== 消融实验三组 mode（2026-09-16，专家对照设计） ==========
+
+
+class TestModes:
+    def test_invalid_mode_rejected(self, chain):
+        with pytest.raises(HTTPException) as ei:
+            _call(mode="banana")
+        assert ei.value.status_code == 400
+        assert "full" in ei.value.detail and "bare" in ei.value.detail
+
+    def test_prompt_only_forces_solve_and_disables_kb(self, chain):
+        """B 组：consult 形态的题面也强制 solve；auto 被忽略；disable_kb 必须透传"""
+        out = _call(intent="auto", mode="prompt_only")
+        call = _only(chain, "solve")
+        assert call["kwargs"]["disable_kb"] is True
+        assert out.intent == "solve"
+        assert out.mode == "prompt_only"
+
+    def test_full_keeps_retrieval(self, chain):
+        _call(mode="full")
+        call = _only(chain, "solve")
+        assert call["kwargs"]["disable_kb"] is False
+
+    def test_bare_mode_skips_all_chains(self, chain, monkeypatch):
+        """A 组：单条 user 消息直答，无 system prompt、无检索、无后处理"""
+        resp = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="裸答内容。"))],
+            usage=SimpleNamespace(prompt_tokens=5, completion_tokens=7),
+        )
+        created: list[str] = []
+
+        def _fake_client(model):
+            created.append(model)
+            return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+                create=lambda **kw: resp)))
+
+        monkeypatch.setattr(eval_mod, "create_client", _fake_client)
+        out = _call(mode="bare")
+
+        assert out.mode == "bare" and out.intent == "bare"
+        assert out.tier is None and out.answer == "裸答内容。"
+        assert out.model == "eval-model"
+        assert out.prompt_tokens == 5 and out.completion_tokens == 7
+        assert created == ["eval-model"]
+        assert not any(chain.calls.values()), "bare 模式不得走任何作答链路"
+        assert chain.usage == [{"model": "eval-model", "user_id": None,
+                                "conversation_id": None, "in": 5, "out": 7,
+                                "task_type": "eval"}]
+
+    def test_bare_error_returned_not_raised(self, chain, monkeypatch):
+        def _boom(model):
+            raise RuntimeError("网络挂了")
+        monkeypatch.setattr(eval_mod, "create_client", _boom)
+        out = _call(mode="bare")
+        assert out.error and "网络挂了" in out.error
+        assert out.answer == "" and out.prompt_tokens == 0
+        assert chain.usage == [], "没消耗 token 就不得记账"
+
+
+class TestPinnedModel:
+    def test_unknown_model_rejected(self, chain, monkeypatch):
+        """幻影模型名会让整批评测 cost 恒记 0（P0-C 同款），必须 400 挡在门外"""
+        monkeypatch.setattr(eval_mod.llm_store, "get_model_by_name", lambda n: None)
+        with pytest.raises(HTTPException) as ei:
+            _call(model_name="ghost-model")
+        assert ei.value.status_code == 400
+        assert "ghost-model" in ei.value.detail
+
+    def test_pinned_model_flows_to_chain_and_verify(self, chain, monkeypatch):
+        monkeypatch.setattr(eval_mod.llm_store, "get_model_by_name",
+                            lambda n: {"model_name": n})
+        out = _call(model_name="glm-5.2")
+        call = _only(chain, "solve")
+        assert call["args"][1] == "glm-5.2"
+        assert call["kwargs"]["verify_model"] == "glm-5.2"
+        assert out.model == "glm-5.2"
+
+    def test_no_pinned_model_keeps_default_behavior(self, chain, monkeypatch):
+        """不传 model_name 时不得查 model_configs（无 DB 单测也要能跑）"""
+        called = []
+        monkeypatch.setattr(eval_mod.llm_store, "get_model_by_name",
+                            lambda n: called.append(n))
+        out = _call()
+        assert called == []
+        assert out.model == "eval-model"

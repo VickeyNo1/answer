@@ -134,7 +134,7 @@ def create_exam(db, user_id: int, subject: str, chapter_ids: list[str] | None,
     seq = 0
     total_score = 0.0
     questions_out: list[dict] = []
-    # 知识库返回英文题型名，映射为系统内中文枚举
+    # 知识库返回的题型键与请求同形（中文），但也兼容英文值
     _TYPE_MAP = {
         "single_choice": "单选",
         "multiple_choice": "多选",

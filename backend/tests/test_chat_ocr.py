@@ -40,7 +40,7 @@ def test_extract_question_text_returns_content(monkeypatch):
     from app.chat import qwen_service
     from app.config import get_settings
     monkeypatch.setattr(qwen_service, "create_client",
-                        lambda: FakeClient(lambda: [_NSResp("甲公司2×24年购入存货。")]))
+                        lambda *a, **k: FakeClient(lambda: [_NSResp("甲公司2×24年购入存货。")]))
     # 本用例无 db_ready 门（MySQL 不可达也会跑），记账必须打桩
     rows: list[dict] = []
     monkeypatch.setattr(
@@ -69,7 +69,7 @@ def test_extract_question_text_usage_failure_does_not_break_ocr(monkeypatch):
         raise RuntimeError("DB 不可达")
 
     monkeypatch.setattr(qwen_service, "create_client",
-                        lambda: FakeClient(lambda: [_NSResp("题干。")]))
+                        lambda *a, **k: FakeClient(lambda: [_NSResp("题干。")]))
     monkeypatch.setattr(qwen_service.llm_store, "record_usage", _boom)
     assert qwen_service.extract_question_text("QUJD", 1) == "题干。"
 
@@ -96,7 +96,7 @@ def test_chat_with_image_emits_ocr_and_stores_combined(client, student_headers, 
                         lambda *a, **kw: {"same": True, "index": 1, "reason": "同一道题"})
     # solver 与 qwen_service 各自持有 create_client 绑定，solve 路径要 patch solver 的
     monkeypatch.setattr(solver, "create_client",
-                        lambda: FakeClient(lambda: [_Chunk("答案。", finish="stop")]))
+                        lambda *a, **k: FakeClient(lambda: [_Chunk("答案。", finish="stop")]))
     resp = client.post("/api/chat", json={
         "conversation_id": None, "message": "请解答", "subject": "cpa_acc",
         "image_base64": "QUJD",
@@ -128,7 +128,7 @@ def test_chat_image_solve_retrieval_query_excludes_ocr_prefix(
     monkeypatch.setattr(solver, "verify_same_question",
                         lambda *a, **kw: {"same": False, "index": None, "reason": "x"})
     monkeypatch.setattr(solver, "create_client",
-                        lambda: FakeClient(lambda: [_Chunk("答案。", finish="stop")]))
+                        lambda *a, **k: FakeClient(lambda: [_Chunk("答案。", finish="stop")]))
     resp = client.post("/api/chat", json={
         "conversation_id": None, "message": "请解答", "subject": "cpa_acc",
         "image_base64": "QUJD",

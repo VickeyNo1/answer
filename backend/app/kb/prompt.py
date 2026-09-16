@@ -10,6 +10,7 @@ SEARCH_TOOL = {
             "检索CPA会计知识库。当用户问题涉及会计准则、会计概念、账务处理、"
             "会计分录、例题讲解，或需要教材原文/练习题佐证时调用；"
             "用户想要练习题、真题时用 collection=questions；"
+            "需要准则条文原文作依据时用 collection=standards；"
             "闲聊或与会计无关的问题不要调用。"
         ),
         "parameters": {
@@ -21,8 +22,9 @@ SEARCH_TOOL = {
                 },
                 "collection": {
                     "type": "string",
-                    "enum": ["textbook", "questions"],
-                    "description": "textbook=查教材讲解（默认）；questions=查练习题/真题",
+                    "enum": ["textbook", "questions", "standards"],
+                    "description": ("textbook=查教材讲解（默认）；questions=查练习题/真题；"
+                                    "standards=查企业会计准则条文原文"),
                 },
                 "top_k": {
                     "type": "integer",
@@ -62,10 +64,12 @@ ANSWER_OMITTED_HINT = "（参考答案与解析已省略，请先自行作答）
 MARKER_NOTICE = """
 
 【内部标头不外泄】上方资料里形如「【题目1｜ACC-2025-Q-5.10｜multiple_choice｜知识点 ACC-05-02-01】」
-「【资料2｜例题｜知识点 ACC-21-01-01｜第21章 租赁 · 第1节｜融资租赁的判断】」的标头行，
+「【资料2｜例题｜知识点 ACC-21-01-01｜第21章 租赁 · 第1节｜融资租赁的判断】」
+「【准则3｜解释第19号《企业会计准则解释第19号》｜…】」的标头行，
 只是给你定位资料用的内部索引，不是学生要看的正文。回答中**不要复制这些标头行**，
 也不要沿用它的竖线分隔格式；需要说明依据时用自然语言写章节与知识点编号，
-例如「依据第21章 租赁（知识点 ACC-21-01-01）」。"""
+例如「依据第21章 租赁（知识点 ACC-21-01-01）」；引用准则时写准则名与条款号即可，
+例如「依据《企业会计准则解释第19号》第二项」。"""
 
 
 def append_marker_notice(context: str) -> str:
@@ -121,7 +125,38 @@ def format_results(data: dict | None, prefer: str | None = None,
     results = data["results"]
     if collection == "questions":
         return _format_questions(results, include_answer=include_answer, heading=heading)
+    if collection == "standards":
+        return _format_standards(results)
     return _format_textbook(results, prefer=prefer)
+
+
+def _format_standards(results: list[dict]) -> str:
+    """standards 库渲染（2026-09-16 实测响应形状定稿）
+
+    与教材条目不同：chapter/section 恒为空串、knowledge_point_ids 恒空、
+    content_type 是 article/notice_item（不在 CONTENT_TYPE_LABELS 八类里），
+    落进 _format_textbook 会渲染出「 · 」空标头 + 全部「未分类」，故独立成支。
+    可用定位字段：standard_no（如「解释第19号」）、standard_title、
+    article_no/article_range（可空）、title（章节或条款标题，可空）。
+
+    「条文原文优先于既有记忆」是针对实测失分模式的定向指令：涉及 2026 年新解释
+    （解释第19/20号等）的题，模型参数记忆里是旧口径，会给出与现行准则相反的答案。
+    """
+    lines = ["以下是从CPA会计准则库检索到的准则/解释原文。若条文原文与你的既有记忆冲突，"
+             "以检索到的原文为准："]
+    for i, r in enumerate(results, start=1):
+        # 各定位字段知识库侧不保证字符串（实测 article_no 出过 int），统一 str() 归一
+        seg = [f"【准则{i}", str(r.get("standard_no") or ""),
+               str(r.get("standard_title") or "")]
+        label = str(r.get("article_no") or r.get("article_range") or "").strip()
+        if label:
+            seg.append(label)
+        title = str(r.get("title") or "").strip()
+        if title:
+            seg.append(title)
+        lines.append("｜".join(s for s in seg if s) + "】")
+        lines.append(r.get("content", ""))
+    return "\n".join(lines)
 
 
 def _content_type_rank(r: dict) -> int:

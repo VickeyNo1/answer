@@ -85,14 +85,35 @@ def make_textbook(title="融资租赁的判断标准", ctype="theory", content="
     }
 
 
+def make_standard(no="解释第19号", title="关于电子支付结算金融负债的终止确认",
+                  content="企业采用电子支付系统以现金结算一项金融负债的，仅在满足三个条件时可在结算日前终止确认。"):
+    """standards 库条目：2026-09-16 实测响应形状（chapter/section 空串、kp 恒空）"""
+    return {
+        "chunk_id": "STD-JS-19-C003",
+        "standard_no": no,
+        "standard_title": f"关于印发《企业会计准则{no}》的通知",
+        "article_no": None,
+        "article_range": None,
+        "title": title,
+        "content": content,
+        "content_type": "notice_item",
+        "knowledge_point_ids": [],
+        "chapter": "",
+        "section": "",
+        "effective_status": "current",
+        "year": 2026,
+        "score": 1.0,
+    }
+
+
 @pytest.fixture
 def kb(monkeypatch):
-    """打桩知识库检索：kb(questions=..., textbook=...)，返回调用记录列表
+    """打桩知识库检索：kb(questions=..., textbook=..., standards=...)，返回调用记录列表
 
-    questions / textbook 分别对应两个 collection 的返回值；传 None 模拟服务不可用。
+    三个键分别对应三个 collection 的返回值；传 None 模拟服务不可用。
     """
     calls: list[dict] = []
-    state = {"questions": None, "textbook": None}
+    state = {"questions": None, "textbook": None, "standards": None}
 
     def _search(query, subject, collection="textbook", top_k=5, **kwargs):
         calls.append({"query": query, "subject": subject,
@@ -101,11 +122,13 @@ def kb(monkeypatch):
 
     monkeypatch.setattr(solver.kb_client, "search", _search)
 
-    def _apply(questions=None, textbook=None):
+    def _apply(questions=None, textbook=None, standards=None):
         if questions is not None:
             state["questions"] = {"collection": "questions", "results": questions}
         if textbook is not None:
             state["textbook"] = {"collection": "textbook", "results": textbook}
+        if standards is not None:
+            state["standards"] = {"collection": "standards", "results": standards}
         return calls
 
     return _apply
@@ -121,7 +144,7 @@ def llm(monkeypatch):
 
     def _install(chunks):
         monkeypatch.setattr(solver, "create_client",
-                            lambda: _fake_client(list(chunks), calls))
+                            lambda *a, **k: _fake_client(list(chunks), calls))
 
     _install(("这是完整解答。",))
 
@@ -249,8 +272,9 @@ class TestSimilarTier:
 
         events, text = _drain(run_solve(_messages(), "m", "cpa_acc", query_text="乙公司购入存货"))
 
-        assert [c["collection"] for c in calls] == ["questions", "textbook"]
+        assert [c["collection"] for c in calls] == ["questions", "textbook", "standards"]
         assert calls[1]["top_k"] == 5
+        assert calls[2]["top_k"] == 3
         prompt = _system_prompt(llm_calls)
         assert "严禁照搬其数据、金额与答案" in prompt
         assert solver.SIMILAR_HEADING in prompt
@@ -316,7 +340,7 @@ class TestNoneTier:
 
         events, text = _drain(run_solve(_messages(), "m", "cpa_acc", query_text="q"))
 
-        assert [c["collection"] for c in calls] == ["questions", "textbook"]
+        assert [c["collection"] for c in calls] == ["questions", "textbook", "standards"]
         assert calls[1]["top_k"] == 8
         assert _one(events, "match")["match"] == {
             "tier": "none", "question_id": None, "verify_reason": "", "kb_scores": [],
@@ -348,6 +372,79 @@ class TestNoneTier:
         prompt = _system_prompt(llm_calls)
         assert "老数据" in prompt
         assert prompt.index("例题B") < prompt.index("老数据")
+
+
+# ========== standards 准则原文库（2026-09-16 接入） ==========
+
+
+class TestStandardsCollection:
+    """standards 库收录 54 份准则/解释原文，重点覆盖 2026 年新解释（19/20号）
+
+    实测失分模式：模型参数记忆是旧口径，涉及新解释的题给出与现行准则相反的答案。
+    similar/none 两档都补查 standards，query 用原始提问（题面常直接点名新解释）。
+    """
+
+    def test_none_tier_injects_standards_with_precedence_instruction(self, kb, llm, verify):
+        calls = kb(questions=[], textbook=[make_textbook()], standards=[make_standard()])
+        llm_calls = llm()
+        events, _ = _drain(run_solve(
+            _messages(), "m", "cpa_acc",
+            query_text="电子支付结算的金融负债何时终止确认"))
+
+        assert calls[2]["collection"] == "standards" and calls[2]["top_k"] == 3
+        prompt = _system_prompt(llm_calls)
+        assert "【准则1｜解释第19号" in prompt
+        assert "以检索到的原文为准" in prompt
+        refs = _one(events, "kb_refs")["kb_refs"]
+        assert refs[-1]["chapter"] == "解释第19号"
+        assert refs[-1]["title"] == "关于印发《企业会计准则解释第19号》的通知"
+        # standards 的 kp 恒空，不得往 kp_ids 里掺空值
+        assert _one(events, "kp_ids")["kp_ids"] == ["ACC-21-01-01"]
+
+    def test_standards_query_uses_original_question_not_topic_query(self, kb, llm, verify):
+        calls = kb(questions=[make_question(stem="融资租赁租入固定资产的初始计量")],
+                   textbook=[make_textbook()], standards=[make_standard()])
+        llm()
+        verify({"same": False, "index": None, "reason": "x"})
+        _drain(run_solve(_messages(), "m", "cpa_acc", query_text="解释第19号 电子支付 终止确认"))
+        # 教材检索用相似题 topic query，standards 检索用原始提问——两路各取所长
+        assert calls[1]["query"] == "第一章 总论 融资租赁租入固定资产的初始计量"
+        assert calls[2]["query"] == "解释第19号 电子支付 终止确认"
+
+    def test_exact_tier_skips_standards(self, kb, llm, verify):
+        """exact 档保持快路径：有原题权威答案，教材与准则都不查"""
+        calls = kb(questions=[make_question()], standards=[make_standard()])
+        llm()
+        verify({"same": True, "index": 1, "reason": "x"})
+        _drain(run_solve(_messages(), "m", "cpa_acc", query_text="q"))
+        assert [c["collection"] for c in calls] == ["questions"]
+
+    def test_standards_up_but_textbook_down_not_degraded(self, kb, llm, verify):
+        """降级 = 三库全空；standards 拿到资料就不算服务不可用"""
+        kb(questions=[], standards=[make_standard()])
+        llm()
+        _, text = _drain(run_solve(_messages(), "m", "cpa_acc", query_text="q"))
+        assert DEGRADED_SUFFIX not in text
+        assert text.endswith(NONE_SUFFIX)
+
+    def test_disable_kb_skips_standards_too(self, kb, llm):
+        """消融 B 组：三次检索全跳过"""
+        calls = kb(standards=[make_standard()])
+        llm()
+        _drain(run_solve(_messages(), "m", "cpa_acc", query_text="q", disable_kb=True))
+        assert calls == []
+
+    def test_non_string_locating_fields_do_not_crash(self, kb, llm, verify):
+        """回归：知识库的 article_no 等字段实测出过 int，渲染不得炸掉整题作答
+        （2026-09-16 首次 72 题重批 9/72 因此报 'int' object has no attribute 'strip'）"""
+        entry = make_standard(no="第22号", title="第二章 金融工具的确认和终止确认")
+        entry["article_no"] = 13          # int 条文号
+        entry["article_range"] = None
+        kb(questions=[], standards=[entry])
+        llm_calls = llm()
+        _drain(run_solve(_messages(), "m", "cpa_acc", query_text="q"))
+        prompt = _system_prompt(llm_calls)
+        assert "【准则1｜第22号" in prompt and "｜13｜" in prompt
 
 
 # ========== 相关性下限 ==========
@@ -432,7 +529,7 @@ class TestRelevanceFloor:
 
 class TestKbUnavailable:
     def test_both_searches_down_uses_degraded_suffix_without_stacking(self, kb, llm, verify):
-        kb()                                   # 两个 collection 都保持 None
+        kb()                                   # 三个 collection 都保持 None
         llm_calls = llm()
         _, text = _drain(run_solve(_messages(), "m", "cpa_acc", query_text="q"))
         assert text.endswith(DEGRADED_SUFFIX)
@@ -695,7 +792,7 @@ def verify_llm(monkeypatch):
 
     monkeypatch.setattr(
         solver, "create_client",
-        lambda: SimpleNamespace(chat=SimpleNamespace(
+        lambda *a, **k: SimpleNamespace(chat=SimpleNamespace(
             completions=_NSCompletions(state["resp"], calls))),
     )
     monkeypatch.setattr(solver.llm_store, "get_model_for", lambda t: f"{t}-model")
@@ -810,3 +907,82 @@ class TestSystemPromptFor:
         """「必须给出解答」是对既往分歧的固化：两阶段揭示方案已被否决"""
         assert "必须给出完整解答" in solver.SOLVE_SYSTEM_PROMPT
         assert "搪塞" in solver.SOLVE_SYSTEM_PROMPT
+
+
+# ========== disable_kb（消融实验 B 组：模型+提示词，无知识库） ==========
+
+
+class TestDisableKb:
+    def test_no_search_no_verify_tier_none(self, kb, llm, verify):
+        calls = kb(questions=[make_question()])  # 桩里备了结果也不该被查
+        llm()
+        seen = verify({"same": True, "index": 1, "reason": "x"})
+
+        events, text = _drain(run_solve(_messages(), "m", "cpa_acc",
+                                        query_text="q", disable_kb=True))
+
+        assert calls == [], "disable_kb 下不得发起任何检索"
+        assert seen == [], "disable_kb 下没有候选，不得触发校验调用"
+        match = _one(events, "match")["match"]
+        assert match["tier"] == "none"
+        assert match["kb_scores"] == []
+        assert text.endswith(solver.NONE_SUFFIX)
+
+    def test_not_marked_degraded(self, kb, llm, verify):
+        """刻意不检索 ≠ 检索服务故障，不得贴 DEGRADED_SUFFIX"""
+        kb()
+        llm()
+        verify({"same": False, "index": None, "reason": "x"})
+        _, text = _drain(run_solve(_messages(), "m", "cpa_acc",
+                                   query_text="q", disable_kb=True))
+        assert text.endswith(solver.NONE_SUFFIX)
+        assert solver.DEGRADED_SUFFIX not in text
+
+    def test_prompt_is_none_tier_with_empty_context(self, kb, llm, verify):
+        """prompt 结构与真实 none 档一致，只是资料段为空"""
+        kb()
+        llm_calls = llm()
+        verify({"same": False, "index": None, "reason": "x"})
+        _drain(run_solve(_messages(), "m", "cpa_acc", query_text="q",
+                         disable_kb=True))
+        prompt = _system_prompt(llm_calls)
+        assert "题库中没有可用于参考本题的题目" in prompt
+        assert solver.NO_CONTEXT_TEXT in prompt
+        assert solver.EXACT_HEADING not in prompt and solver.SIMILAR_HEADING not in prompt
+
+    def test_no_kb_events_emitted(self, kb, llm, verify):
+        kb()
+        llm()
+        verify({"same": False, "index": None, "reason": "x"})
+        events, _ = _drain(run_solve(_messages(), "m", "cpa_acc", query_text="q",
+                                     disable_kb=True))
+        assert "kb_refs" not in events[0] and "kp_ids" not in events[0]
+        assert not any("kb_refs" in e or "kp_ids" in e for e in events)
+
+
+class TestVerifyModelPassthrough:
+    """消融实验 C 组：verify 与作答同模型，才能把「换模型」隔离为唯一变量"""
+
+    def _install(self, monkeypatch, seen):
+        def _stub(question_text, candidates, *a, **kw):
+            seen.append(kw.get("model_name"))
+            return {"same": False, "index": None, "relevant_indexes": None, "reason": ""}
+        monkeypatch.setattr(solver, "verify_same_question", _stub)
+
+    def test_pinned_model_reaches_verify(self, kb, llm, monkeypatch):
+        kb(questions=[make_question()])
+        llm()
+        seen: list = []
+        self._install(monkeypatch, seen)
+        _drain(run_solve(_messages(), "m", "cpa_acc", query_text="q",
+                         verify_model="pinned-m"))
+        assert seen == ["pinned-m"]
+
+    def test_default_goes_through_get_model_for(self, kb, llm, verify, monkeypatch):
+        kb(questions=[make_question()])
+        llm()
+        # verify fixture 不记录 model_name；这里换记录桩，None = 交由 get_model_for 决定
+        seen: list = []
+        self._install(monkeypatch, seen)
+        _drain(run_solve(_messages(), "m", "cpa_acc", query_text="q"))
+        assert seen == [None]

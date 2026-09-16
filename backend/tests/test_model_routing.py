@@ -9,6 +9,7 @@ import pytest
 
 from app.config import get_settings
 from app.llm import store as llm_store
+from app.llm.client import DASHSCOPE_BASE_URL, completion_extra, create_client
 
 
 @pytest.fixture
@@ -72,3 +73,28 @@ class TestTaskModelFieldsDeclared:
         settings = get_settings()
         assert hasattr(settings, field)
         assert isinstance(getattr(settings, field), str)
+
+
+# ========== 客户端厂商路由（消融实验，2026-09-16：GLM 走智谱自有端点） ==========
+
+
+class TestClientRouting:
+    def test_completion_extra_qwen_and_deepseek(self):
+        assert completion_extra("qwen3.7-flash") == {"enable_thinking": False}
+        assert completion_extra("deepseek-v3") == {"enable_thinking": False}
+        assert completion_extra(None) == {"enable_thinking": False}
+
+    def test_completion_extra_glm_case_insensitive(self):
+        assert completion_extra("glm-5.2") == {"thinking": {"type": "disabled"}}
+        assert completion_extra("GLM-5.2") == {"thinking": {"type": "disabled"}}
+
+    def test_create_client_routes_glm_to_zhipu(self, monkeypatch):
+        monkeypatch.setattr(get_settings(), "ZHIPU_API_KEY", "test-key")
+        client = create_client("glm-5.2")
+        assert str(client.base_url).rstrip("/") == get_settings().ZHIPU_BASE_URL
+
+    def test_create_client_default_and_qwen_go_dashscope(self, monkeypatch):
+        monkeypatch.setattr(get_settings(), "DASHSCOPE_API_KEY", "test-key")
+        assert str(create_client().base_url).rstrip("/") == DASHSCOPE_BASE_URL
+        assert (str(create_client("qwen3.7-flash").base_url).rstrip("/")
+                == DASHSCOPE_BASE_URL)

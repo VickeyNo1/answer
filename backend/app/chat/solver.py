@@ -42,7 +42,7 @@ from app.kb.prompt import (
     sub_question_text,
 )
 from app.llm import store as llm_store
-from app.llm.client import create_client
+from app.llm.client import completion_extra, create_client
 
 logger = logging.getLogger(__name__)
 
@@ -69,12 +69,13 @@ EXACT_BLOCK = """
 SIMILAR_BLOCK = """
 
 【本题命中情况】题库中**未找到本题原题**。下方相似题**不是本题**，仅供解题思路参考——
-**严禁照搬其数据、金额与答案**。请结合教材资料独立求解本题，给出完整步骤与最终答案。"""
+**严禁照搬其数据、金额与答案**。请结合教材资料与准则原文独立求解本题，给出完整步骤与最终答案。"""
 
 NONE_BLOCK = """
 
 【本题命中情况】题库中没有可用于参考本题的题目。
-若下方附有教材资料，请以其为准则依据；否则依据企业会计准则独立求解。
+若下方附有教材或准则原文资料，请以其为依据（准则原文与你的既有记忆冲突时，以原文为准）；
+否则依据企业会计准则独立求解。
 两种情况都必须给出完整推理步骤与最终答案，并在关键假设处说明依据。"""
 
 # 档位标注：附在答案末尾随正文落库，是本轮唯一的档位可见性手段（前端零改动）
@@ -242,14 +243,14 @@ def verify_same_question(question_text: str, candidates: list[dict],
         return {"same": False, "index": None, "relevant_indexes": [], "reason": "无候选题"}
     try:
         model = model_name or llm_store.get_model_for("verify")
-        client = create_client()
+        client = create_client(model)
         resp = client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": VERIFY_SYSTEM_PROMPT},
                 {"role": "user", "content": build_verify_prompt(question_text, candidates)},
             ],
-            extra_body={"enable_thinking": False},
+            extra_body=completion_extra(model),
         )
         content = resp.choices[0].message.content or ""
         _record_verify_usage(resp, model, user_id, conversation_id)
@@ -292,6 +293,19 @@ def _textbook_refs(results: list[dict]) -> list[dict]:
     ]
 
 
+def _standards_refs(results: list[dict]) -> list[dict]:
+    """standards 结果的引用卡片：kp 恒空，用准则号/准则名定位"""
+    return [
+        {
+            "kp_id": "",
+            "chapter": str(r.get("standard_no") or ""),
+            "title": str(r.get("standard_title") or ""),
+            "snippet": str(r.get("content") or "")[:100],
+        }
+        for r in results
+    ]
+
+
 def _topic_query(results: list[dict], fallback: str) -> str:
     """similar 档的教材检索 query：用相似题自己的题干/资料（干净、同话题）
 
@@ -323,16 +337,25 @@ def _build_answer_messages(messages: list[dict], block: str, context: str) -> li
 
 def run_solve(messages: list[dict], model_name: str | None, subject: str,
               user_id: int | None = 0, conversation_id: int | None = None,
-              query_text: str = "", log_enabled: bool = True):
+              query_text: str = "", log_enabled: bool = True,
+              disable_kb: bool = False, verify_model: str | None = None):
     """solve 意图的确定性检索阶梯 + 单次流式作答
 
     事件词汇与 qwen_service.stream_chat 完全一致，另加 {"match": {...}}
     （前端 lib/sse.ts 的 switch 无 default 分支，未知事件静默忽略，不会炸前端；
     批量答题工具直接消费该事件拿结构化档位）。
 
-    log_enabled=False 供批量评测使用：检索行为不变，但两次检索都不写
+    log_enabled=False 供批量评测使用：检索行为不变，但各次检索都不写
     kb_search_logs。user_id 可为 None（usage_logs 该列可空且无外键），
     评测用量因此不挂到任何真实学生头上。
+
+    disable_kb=True 供消融实验的 B 组（模型+提示词，无知识库）：各次检索都
+    跳过、不触发校验调用，自然落入 none 档路径——prompt 结构、档位说明块、
+    末尾标注与真实 none 档完全相同，只是资料段为空。此时不算降级
+    （DEGRADED_SUFFIX 是「检索服务挂了」，与消融组语义不符）。
+
+    verify_model 非空时校验调用用它而非 get_model_for("verify")：消融实验
+    的 C 组需要 verify 与作答同模型，才能把「换模型」作为唯一变量隔离。
     """
     settings = get_settings()
     model = model_name or settings.CHAT_MODEL
@@ -345,7 +368,7 @@ def run_solve(messages: list[dict], model_name: str | None, subject: str,
         yield {"kb_search": True}
 
         # ===== 第 1 步：题库检索（solve 必查 questions，不交给模型决定）=====
-        q_data = kb_client.search(
+        q_data = None if disable_kb else kb_client.search(
             query=query, subject=subject, collection="questions", top_k=3,
             user_id=user_id, conversation_id=conversation_id,
             log_enabled=log_enabled,
@@ -356,7 +379,8 @@ def run_solve(messages: list[dict], model_name: str | None, subject: str,
         tier, matched, ref_questions = "none", None, []
         verify = {"same": False, "index": None, "reason": ""}
         if q_results:
-            verify = verify_same_question(query, q_results, user_id, conversation_id)
+            verify = verify_same_question(query, q_results, user_id, conversation_id,
+                                          model_name=verify_model)
             idx = verify.get("index")
             # 校验失败或 index 越界一律 similar：绝不在无正向确认时宣称找到原题
             if verify.get("same") and isinstance(idx, int) and 1 <= idx <= len(q_results):
@@ -388,6 +412,7 @@ def run_solve(messages: list[dict], model_name: str | None, subject: str,
         refs: list[dict] = []
         kp_ids = collect_kp_ids({"results": [matched]}) if matched else []
         t_data = None
+        s_data = None
 
         if tier == "exact":
             parts.append(format_results(
@@ -410,7 +435,7 @@ def run_solve(messages: list[dict], model_name: str | None, subject: str,
             else:
                 text_query, top_k, prefer = query, 8, "solve"
 
-            t_data = kb_client.search(
+            t_data = None if disable_kb else kb_client.search(
                 query=text_query, subject=subject, collection="textbook", top_k=top_k,
                 user_id=user_id, conversation_id=conversation_id,
                 log_enabled=log_enabled,
@@ -423,13 +448,30 @@ def run_solve(messages: list[dict], model_name: str | None, subject: str,
                     if kp not in kp_ids:
                         kp_ids.append(kp)
 
+            # standards 库（准则/解释原文）2026-09 起可用：similar/none 两档都补查。
+            # query 用原始提问——题面常直接点名新解释/新准则，教材定向 query 反而丢掉该信号；
+            # 失败（None）静默跳过，不影响其余资料，也不单独算降级
+            s_data = None if disable_kb else kb_client.search(
+                query=query, subject=subject, collection="standards", top_k=3,
+                user_id=user_id, conversation_id=conversation_id,
+                log_enabled=log_enabled,
+            )
+            s_results = (s_data or {}).get("results") or []
+            if s_results:
+                parts.append(format_results(s_data))
+                refs.extend(_standards_refs(s_results))
+
         if kp_ids:
             yield {"kp_ids": kp_ids}
         if refs:
             yield {"kb_refs": refs}
 
-        # 降级判定：exact 档本就不查教材，只看题库；其余档要两次检索都失败才算服务不可用
-        degraded = False if tier == "exact" else (q_data is None and t_data is None)
+        # 降级判定：exact 档本就不查教材，只看题库；其余档要三次检索全部失败才算服务不可用
+        # （standards 或教材任一拿到资料就不算降级）。disable_kb 是消融组（刻意不检索），
+        # 不是检索服务故障，不算降级
+        degraded = False if (tier == "exact" or disable_kb) else (
+            q_data is None and t_data is None and s_data is None
+        )
         if degraded:
             suffix = DEGRADED_SUFFIX
         elif tier == "exact":
@@ -447,7 +489,7 @@ def run_solve(messages: list[dict], model_name: str | None, subject: str,
         block = {"exact": EXACT_BLOCK, "similar": SIMILAR_BLOCK}.get(tier, NONE_BLOCK)
 
         # ===== 第 4 步：单次流式作答 =====
-        client = create_client()
+        client = create_client(model)
         answer_messages = _build_answer_messages(messages, block, context)
         for event in stream_answer(client, model, answer_messages, suffix):
             if "round_usage" in event:
@@ -525,7 +567,7 @@ def run_practice(messages: list[dict], model_name: str | None, subject: str,
         if refs:
             yield {"kb_refs": refs}
 
-        client = create_client()
+        client = create_client(model)
         answer_messages = _build_answer_messages(messages, block, context)
         for event in stream_answer(client, model, answer_messages, suffix):
             if "round_usage" in event:

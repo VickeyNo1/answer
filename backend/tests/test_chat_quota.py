@@ -61,7 +61,7 @@ class FakeClient:
 @pytest.fixture(autouse=True)
 def _mock_llm(monkeypatch):
     monkeypatch.setattr(
-        "app.chat.qwen_service.create_client", lambda: FakeClient()
+        "app.chat.qwen_service.create_client", lambda *a, **k: FakeClient()
     )
 
 

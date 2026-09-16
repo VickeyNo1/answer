@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     # 批量评测：400 题一次性跑，想固定用最便宜档而不受生产对话切换模型影响
     EVAL_MODEL: str = ""
 
+    # 智谱开放平台（GLM 系列直连自有端点，走用户自购资源包；其余模型一律走百炼）。
+    # create_client(model_name) 见模型名以 glm 开头时路由到此端点
+    ZHIPU_API_KEY: str = ""
+    ZHIPU_BASE_URL: str = "https://open.bigmodel.cn/api/paas/v4"
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]

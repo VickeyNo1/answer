@@ -111,7 +111,7 @@ TABLES_SQL = [
         user_id INT NOT NULL COMMENT '触发检索的用户 ID（users.id）',
         conversation_id INT NULL COMMENT '所属会话 ID（conversations.id，可空）',
         subject VARCHAR(32) NOT NULL COMMENT '科目枚举值（如 cpa_acc）',
-        collection VARCHAR(16) NOT NULL COMMENT '检索集合：textbook=教材 / questions=题库',
+        collection VARCHAR(16) NOT NULL COMMENT '检索集合：textbook=教材 / questions=题库 / standards=准则',
         query VARCHAR(255) NOT NULL COMMENT '大模型生成的检索词',
         result_count INT NOT NULL DEFAULT 0 COMMENT '命中条数',
         kp_ids TEXT NULL COMMENT '命中知识点 ID，JSON 字符串格式（如 ["ACC-03-02-01"]，与 messages.knowledge_point_ids 一致）',
