@@ -166,6 +166,7 @@ def stream_answer(client, model: str, messages: list[dict], suffix: str = ""):
         model=model,
         messages=messages,
         stream=True,
+        stream_options={"include_usage": True},
         extra_body=completion_extra(model),
     )
 
@@ -253,6 +254,7 @@ def stream_chat(
             messages=messages,
             tools=[SEARCH_TOOL],
             stream=True,
+            stream_options={"include_usage": True},
             extra_body=completion_extra(model),
         )
 
