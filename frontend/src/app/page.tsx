@@ -292,7 +292,7 @@ function HomeContent() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
             </svg>
           </button>
-          <h1 className="text-lg font-semibold text-gray-900 max-md:hidden">会计答疑智能体</h1>
+          <h1 className="text-lg font-semibold text-gray-900 max-md:hidden">会计教育智能答疑系统</h1>
           <div className="flex items-center gap-1.5">
             <span className="text-sm text-gray-400 max-md:hidden">科目</span>
             <select

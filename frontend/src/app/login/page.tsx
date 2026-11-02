@@ -40,7 +40,7 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
       <div className="w-full max-w-md">
         <div className="mb-8 text-center">
-          <h1 className="text-3xl font-bold text-gray-900">会计答疑智能体</h1>
+          <h1 className="text-3xl font-bold text-gray-900">会计教育智能答疑系统</h1>
           <p className="mt-2 text-sm text-gray-500">
             AI 驱动的会计专业智能答疑系统
           </p>

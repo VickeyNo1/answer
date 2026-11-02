@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="会计答疑智能体",
+    title="会计教育智能答疑系统",
     description="面向会计专业学生的 AI 智能答疑系统",
     version="1.0.0",
     lifespan=lifespan,

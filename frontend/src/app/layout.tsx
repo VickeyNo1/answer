@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "会计答疑智能体",
+  title: "会计教育智能答疑系统",
   description: "面向会计专业学生的 AI 智能答疑系统",
 };
 

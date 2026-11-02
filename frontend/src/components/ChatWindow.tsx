@@ -72,7 +72,7 @@ export function ChatWindow({
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 3v-3z" />
               </svg>
             </div>
-            <h3 className="text-lg font-medium text-gray-700">会计答疑智能体</h3>
+            <h3 className="text-lg font-medium text-gray-700">会计教育智能答疑系统</h3>
             <p className="mt-1 text-sm text-gray-400">
               在下方输入你的会计问题，AI 将为你解答
             </p>
